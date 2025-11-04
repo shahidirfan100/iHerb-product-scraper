@@ -408,13 +408,15 @@ crawler = new PlaywrightCrawler({
             ],
         },
     },
+    gotoFunction: async ({ page, request, log: crawlerLog }) => {
+        crawlerLog.debug(`Navigating to ${request.url}`);
+        return page.goto(request.url, {
+            waitUntil: 'networkidle',
+            timeout: 45000,
+        });
+    },
     preNavigationHooks: [
-        async ({ page, session, browserController, gotoOptions }) => {
-            // Configure navigation options
-            Object.assign(gotoOptions, {
-                waitUntil: 'networkidle',
-                timeout: 45000,
-            });
+        async ({ page, session, browserController }) => {
 
             if (!page.__blockResourcesApplied) {
                 await page.route('**/*', (route) => {
