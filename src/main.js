@@ -168,6 +168,60 @@ function extractProductFromNextData(nextData, toAbs, effectiveUrl) {
     return product;
 }
 
+function extractListProductsFromNextData(nextData, toAbs, baseUrl) {
+    if (!nextData) return [];
+    const stack = [nextData];
+    const seen = new Set();
+    const results = new Map();
+
+    const readText = (node, keys) => {
+        for (const key of keys) {
+            if (node[key]) return String(node[key]).trim();
+        }
+        return null;
+    };
+
+    while (stack.length) {
+        const node = stack.pop();
+        if (!node || typeof node !== 'object') continue;
+        if (seen.has(node)) continue;
+        seen.add(node);
+
+        const keys = Object.keys(node);
+        const hasProductId = keys.some((key) => /productid|product_id|itemid|sku|id/i.test(key));
+        const hasUrl = keys.some((key) => /url|href|link/i.test(key));
+
+        if (hasUrl) {
+            const urlCandidate = node.url || node.href || node.link || node.productUrl || node.product_url;
+            const absUrl = typeof urlCandidate === 'string' ? toAbs(urlCandidate, baseUrl) : null;
+            if (absUrl && absUrl.includes('/pr/')) {
+                const productId = readText(node, ['productId', 'productID', 'product_id', 'itemId', 'itemID', 'id']);
+                const productTitle = readText(node, ['displayName', 'productName', 'name', 'title']);
+                const brand = readText(node, ['brand', 'brandName', 'brandname', 'manufacturerName']);
+                const price = readText(node, ['price', 'currentPrice', 'salePrice', 'listPrice']);
+                const currency = readText(node, ['currency', 'currencyCode', 'currencySymbol']);
+
+                const existing = results.get(absUrl) || {};
+                results.set(absUrl, {
+                    ...existing,
+                    product_url: absUrl,
+                    product_id: existing.product_id || productId,
+                    product_title: existing.product_title || productTitle,
+                    brand: existing.brand || brand,
+                    price: existing.price || price,
+                    currency: existing.currency || currency,
+                });
+            }
+        }
+
+        for (const value of Object.values(node)) {
+            if (value && typeof value === 'object') stack.push(value);
+        }
+    }
+
+    return [...results.values()];
+}
+
 function resolveBaseOrigin(loc) {
     if (typeof loc !== 'string') return DEFAULT_IHERB_ORIGIN;
     const trimmed = loc.trim();
@@ -625,9 +679,13 @@ async function main() {
                 if (label === 'CATEGORY') {
                     const links = findProductLinks($, effectiveUrl);
                     const structuredItems = extractItemListProducts($, toAbs, effectiveUrl);
-                    const structuredUrls = structuredItems.map((item) => item.product_url).filter(Boolean);
+                    const nextData = extractNextData($);
+                    const nextDataItems = extractListProductsFromNextData(nextData, toAbs, effectiveUrl);
+
+                    const structuredCandidates = [...structuredItems, ...nextDataItems];
+                    const structuredUrls = structuredCandidates.map((item) => item.product_url).filter(Boolean);
                     const allDiscovered = [...new Set([...links, ...structuredUrls])];
-                    crawlerLog.info(`CATEGORY ${effectiveUrl} -> found ${links.length} anchor links, ${structuredUrls.length} structured links (unique ${allDiscovered.length})`);
+                    crawlerLog.info(`CATEGORY ${effectiveUrl} -> found ${links.length} anchor links, ${structuredUrls.length} structured links (Next.js: ${nextDataItems.length}), unique ${allDiscovered.length}`);
 
                     const remaining = RESULTS_WANTED - saved;
                     if (remaining <= 0) return;
@@ -646,7 +704,7 @@ async function main() {
                             await enqueueLinks({ urls: toEnqueue, userData: { label: 'PRODUCT' } });
                         }
                     } else {
-                        const structuredByUrl = new Map(structuredItems.map((item) => [item.product_url, item]));
+                        const structuredByUrl = new Map(structuredCandidates.map((item) => [item.product_url, item]));
                         const toPush = filteredLinks.slice(0, Math.max(0, remaining)).map((productUrl) => {
                             const structured = structuredByUrl.get(productUrl);
                             return {
@@ -843,6 +901,9 @@ async function main() {
         }
         if (skipStats.blocked) {
             log.warning(`Skipped ${skipStats.blocked} products due to missing mandatory data`);
+        }
+        if (!saved) {
+            log.warning('No products were saved. Verify start URLs/keywords and consider providing cookies or residential proxy to bypass geo or bot restrictions.');
         }
     } finally {
         await Actor.exit();
