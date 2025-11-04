@@ -1,6 +1,5 @@
 import { Actor, log } from 'apify';
 import { Dataset, PlaywrightCrawler } from 'crawlee';
-import { chromium } from 'playwright';
 
 /**
  * Normalise origin/location input into a usable base URL.
@@ -393,17 +392,7 @@ crawler = new PlaywrightCrawler({
             },
         },
     },
-    gotoFunction: async ({ page, request, gotoOptions, log: crawlerLog }) => {
-        const mergedOptions = {
-            waitUntil: 'networkidle',
-            timeout: 45000,
-            ...gotoOptions,
-        };
-        crawlerLog.debug(`Navigating to ${request.url}`);
-        return page.goto(request.url, mergedOptions);
-    },
     launchContext: {
-        launcher: chromium,
         launchOptions: {
             headless: true,
             args: [
@@ -420,7 +409,13 @@ crawler = new PlaywrightCrawler({
         },
     },
     preNavigationHooks: [
-        async ({ page, session, browserController }) => {
+        async ({ page, session, browserController, gotoOptions }) => {
+            // Configure navigation options
+            Object.assign(gotoOptions, {
+                waitUntil: 'networkidle',
+                timeout: 45000,
+            });
+
             if (!page.__blockResourcesApplied) {
                 await page.route('**/*', (route) => {
                     const type = route.request().resourceType();
