@@ -5,10 +5,10 @@ This Apify actor gathers structured product data from [iHerb](https://www.iherb.
 ## Features
 - Start from keywords, categories, or any combination of `startUrl`, `url`, and `startUrls` (including `requestsFromUrl` sources).
 - Configure market domain (`location`) and `Accept-Language` header to target localized storefronts.
-- Extracts rich product data by combining JSON-LD, Next.js `__NEXT_DATA__`, and resilient HTML fallbacks.
+- Extracts rich product data by combining JSON-LD, Next.js `__NEXT_DATA__` payloads, and resilient HTML fallbacks.
 - Detail mode (`collectDetails=true`) opens product pages; listing mode pushes product URLs directly from category/search pages.
 - In-memory deduplication, configurable concurrency/retries, proxy support, and optional custom cookies.
-- Randomized desktop headers via `header-generator`, plus automatic skip & logging of bot/captcha challenges.
+- Randomized desktop headers via `header-generator`, plus automatic skip & logging of bot/captcha/403 challenges with session rotation.
 
 ## Input
 All fields are optional unless noted. See `.actor/input_schema.json` for defaults.
@@ -59,4 +59,5 @@ When `collectDetails=false`, the actor stores the discovered listing URLs (with 
 ## Notes
 - Always run behind the Apify Proxy (residential or smartproxy groups recommended) for best stability.
 - The actor respects `robots.txt` and skips pages guarded by bots or CAPTCHAs while reporting the counts in the crawler summary.
+- 403/429/503 responses trigger automatic session retirement and retry, but persistent blocking means the target is challenging your IP. When that happens, switch to residential proxy groups, lower concurrency, or provide cookies/headers captured from a real browser.
 - If iHerb deploys major layout changes, adjust selectors in `src/main.js`, but the JSON-LD / Next.js fallbacks already cover most UI variations.

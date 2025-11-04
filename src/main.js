@@ -648,7 +648,12 @@ async function main() {
             maxRequestRetries: MAX_REQUEST_RETRIES,
             useSessionPool: true,
             sessionPoolOptions: {
-                sessionOptions: { maxErrorScore: 3 },
+                maxPoolSize: 100,
+                sessionOptions: {
+                    maxErrorScore: 2,
+                    maxUsageCount: 40,
+                },
+                blockedStatusCodes: [403, 429, 503],
             },
             persistCookiesPerSession: true,
             maxConcurrency: MAX_CONCURRENCY,
@@ -665,11 +670,21 @@ async function main() {
                     if (cookieHeader && !request.headers.Cookie) request.headers.Cookie = cookieHeader;
                 },
             ],
-            async requestHandler({ request, $, enqueueLinks, log: crawlerLog }) {
+            throwOnBlocked: false,
+            async requestHandler({ request, $, enqueueLinks, log: crawlerLog, response, session }) {
                 const effectiveUrl = request.loadedUrl || request.url;
+                const status = response?.statusCode;
+
+                if (status === 403 || status === 429 || status === 503) {
+                    crawlerLog.warning(`Blocked with status ${status} at ${effectiveUrl}; retiring session and retrying`);
+                    if (session) session.markBad();
+                    throw new Error(`Blocked with status ${status}`);
+                }
+
                 if (isBotChallenge($)) {
                     crawlerLog.warning(`Bot challenge detected at ${effectiveUrl}, skipping`);
                     skipStats.captcha++;
+                    if (session) session.markBad();
                     return;
                 }
 
@@ -891,7 +906,11 @@ async function main() {
                     }
                     return;
                 }
-            }
+            },
+            async failedRequestHandler({ request, log: crawlerLog, session, error }) {
+                if (session) session.retire();
+                crawlerLog.error(`Request ${request.url} failed after ${request.retryCount} retries: ${error?.message || error}`);
+            },
         });
 
         await crawler.run();
