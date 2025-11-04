@@ -1,19 +1,21 @@
-FROM apify/actor-node-playwright:20
+FROM apify/actor-node-playwright-chrome:22-1.54.1
 
-ENV PLAYWRIGHT_BROWSERS_PATH=/usr/lib/playwright \
-    NODE_ENV=production \
-    APIFY_LOG_LEVEL=INFO
+RUN npm ls crawlee apify puppeteer playwright
 
-USER root
 WORKDIR /usr/src/app
 
-COPY package*.json ./
-RUN npm install --omit=dev --no-audit --no-fund --prefer-offline --unsafe-perm && npm cache clean --force
+COPY --chown=myuser:myuser package*.json Dockerfile ./
 
-COPY . .
+RUN npm --quiet set progress=false \
+    && npm install --omit=dev --omit=optional \
+    && echo "Installed NPM packages:" \
+    && (npm list --omit=dev --all || true) \
+    && echo "Node.js version:" \
+    && node --version \
+    && echo "NPM version:" \
+    && npm --version \
+    && rm -r ~/.npm
 
-RUN npx playwright install --with-deps chromium && chown -R myuser:myuser /usr/src/app
+COPY --chown=myuser:myuser . ./
 
-USER myuser
-
-CMD ["node", "src/main.js"]
+CMD npm start --silent

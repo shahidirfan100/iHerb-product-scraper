@@ -1,14 +1,15 @@
 {
   "name": "iherb-product-scraper",
   "version": "1.0.0",
-  "description": "iHerb product scraper using Playwright (Crawlee + real browser).",
+  "description": "iHerb product scraper powered by Crawlee + Playwright.",
   "type": "module",
   "scripts": {
-    "start": "node src/main.js"
+    "start": "node src/main.js",
+    "postinstall": "npx crawlee install-playwright-browsers"
   },
   "dependencies": {
-    "apify": "^3.4.5",
-    "crawlee": "^3.14.1",
-    "playwright": "^1.48.0"
+    "apify": "^3.5.1",
+    "crawlee": "^3.15.2",
+    "playwright": "1.54.1"
   }
 }
