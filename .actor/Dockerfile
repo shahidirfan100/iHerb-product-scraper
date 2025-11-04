@@ -1,11 +1,15 @@
-FROM apify/actor-node:22
+# Use Apify's Playwright Chrome base image
+FROM apify/actor-node-playwright-chrome:22
 
-RUN npm ls crawlee apify
+# Verify pre-installed packages
+RUN npm ls crawlee apify playwright || true
 
 WORKDIR /usr/src/app
 
+# Copy package files
 COPY package*.json ./
 
+# Install dependencies (browsers already included in base image)
 RUN npm --quiet set progress=false \
     && npm install --omit=dev --omit=optional \
     && echo "Installed NPM packages:" \
@@ -15,6 +19,8 @@ RUN npm --quiet set progress=false \
     && echo "NPM version:" \
     && npm --version
 
+# Copy source code
 COPY . ./
 
+# Start the actor
 CMD npm start --silent
