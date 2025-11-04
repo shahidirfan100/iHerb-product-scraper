@@ -1,5 +1,10 @@
 import { Actor, log } from 'apify';
 import { Dataset, PlaywrightCrawler } from 'crawlee';
+import { chromium as playwrightChromium } from 'playwright-extra';
+import StealthPlugin from 'playwright-extra-plugin-stealth';
+
+const stealthPlugin = new StealthPlugin();
+playwrightChromium.use(stealthPlugin);
 
 /**
  * Normalise origin/location input into a usable base URL.
@@ -108,7 +113,7 @@ const resultsWanted =
         ? 100
         : asPositiveInteger(resultsWantedInput, Number.POSITIVE_INFINITY);
 const maxPages = asPositiveInteger(maxPagesInput, 20);
-const maxConcurrency = asPositiveInteger(maxConcurrencyInput, 6);
+const maxConcurrency = asPositiveInteger(maxConcurrencyInput, 8);
 
 log.info('Using origin:', { baseOrigin });
 
@@ -212,15 +217,23 @@ const stopIfNeeded = async () => {
 };
 
 const extractNextData = async (page) => {
-    return page.evaluate(() => {
-        const script = document.querySelector('script#__NEXT_DATA__');
-        if (!script) return null;
-        try {
-            return JSON.parse(script.textContent);
-        } catch {
-            return null;
-        }
-    });
+    const scriptLocator = page.locator('script#__NEXT_DATA__');
+    if (!(await scriptLocator.count())) return null;
+    const payload = await scriptLocator.textContent();
+    if (!payload) return null;
+    try {
+        return JSON.parse(payload);
+    } catch {
+        return null;
+    }
+};
+
+const looksLikeChallengePage = async (page) => {
+    const title = (await page.title()).toLowerCase();
+    if (title.includes('just a moment') || title.includes('please wait')) return true;
+
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 4000)?.toLowerCase() ?? '');
+    return bodyText.includes('cf-chl') || bodyText.includes('cloudflare') || bodyText.includes('bot detection');
 };
 
 const pushListingDatasetItem = async (origin, item) => {
@@ -318,8 +331,8 @@ crawler = new PlaywrightCrawler({
     requestQueue,
     proxyConfiguration,
     maxConcurrency,
-    requestHandlerTimeoutSecs: 60,
-    navigationTimeoutSecs: 45,
+    requestHandlerTimeoutSecs: 75,
+    navigationTimeoutSecs: 35,
     useSessionPool: true,
     sessionPoolOptions: {
         sessionOptions: {
@@ -327,17 +340,52 @@ crawler = new PlaywrightCrawler({
             maxAgeSecs: 300,
         },
     },
+    browserPoolOptions: {
+        useFingerprints: true,
+        fingerprintOptions: {
+            fingerprintGeneratorOptions: {
+                devices: ['desktop'],
+                browsers: ['chrome', 'edge'],
+                operatingSystems: ['windows'],
+                locales: language ? [language] : undefined,
+            },
+        },
+    },
+    playwright: playwrightChromium,
     launchContext: {
+        launcher: playwrightChromium,
         launchOptions: {
             headless: true,
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-extensions',
+                '--disable-default-apps',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-web-security',
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+                '--disable-features=IsolateOrigins,site-per-process,TranslateUI',
+            ],
         },
     },
     preNavigationHooks: [
-        async ({ page }) => {
+        async ({ page, session, browserController }) => {
             if (!page.__blockResourcesApplied) {
                 await page.route('**/*', (route) => {
                     const type = route.request().resourceType();
+                    const url = route.request().url();
                     if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+                        return route.abort();
+                    }
+                    if (
+                        url.includes('google-analytics') ||
+                        url.includes('doubleclick.net') ||
+                        url.includes('googletagmanager') ||
+                        url.includes('facebook.net') ||
+                        url.includes('hotjar.com') ||
+                        url.includes('clarity.ms')
+                    ) {
                         return route.abort();
                     }
                     return route.continue();
@@ -351,18 +399,45 @@ crawler = new PlaywrightCrawler({
                 });
             }
 
-            if (cookiesForContext.length) {
+            if (cookiesForContext.length && !page.context().__cookiesApplied) {
                 try {
                     await page.context().addCookies(cookiesForContext);
+                    page.context().__cookiesApplied = true;
                 } catch (err) {
                     log.warning(`Failed to add cookies to context: ${err.message}`);
                 }
+            }
+
+            const fingerprint = browserController?.fingerprint;
+            if (fingerprint) {
+                const { screen, navigator: nav } = fingerprint;
+                if (screen?.width && screen?.height) {
+                    await page.setViewportSize({
+                        width: screen.width,
+                        height: screen.height,
+                    });
+                }
+                const ua = nav?.userAgent;
+                if (ua) await page.setUserAgent(ua);
+            }
+
+            if (session?.userData) {
+                session.userData.lastUrl = page.url();
             }
         },
     ],
     navigationOptions: {
         waitUntil: 'domcontentloaded',
     },
+    postNavigationHooks: [
+        async ({ page, session }) => {
+            if (await looksLikeChallengePage(page)) {
+                log.warning('Bot challenge detected, retiring session.');
+                if (session) session.retire();
+                throw new Error('Encountered bot challenge / Cloudflare gate');
+            }
+        },
+    ],
     async requestHandler({ page, request, log: crawlerLog, crawler: crawlerInstance }) {
         const { label } = request.userData;
         crawlerLog.info(`Processing ${label ?? 'UNKNOWN'}: ${request.url}`);

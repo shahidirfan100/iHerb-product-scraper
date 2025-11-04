@@ -1,16 +1,13 @@
-FROM alpine:latest
+FROM apify/actor-node-playwright:20
 
-RUN apk add --no-cache nodejs npm
+WORKDIR /usr/src/app
 
-RUN addgroup app && adduser app -G app -D
-WORKDIR /home/app
-USER app
+COPY package*.json ./
+RUN npm ci --omit=dev && rm -rf ~/.npm || true
 
-COPY --chown=app:app package*.json ./
-RUN npm i --omit=dev && rm -r ~/.npm || true
+COPY . ./
 
-COPY --chown=app:app . ./
+ENV APIFY_LOG_LEVEL=INFO \
+    PLAYWRIGHT_BROWSERS_PATH=/usr/lib/playwright
 
-ENV APIFY_LOG_LEVEL=ERROR
-
-CMD npm start --silent
+CMD ["node", "src/main.js"]
