@@ -130,42 +130,45 @@ const deriveListingMeta = (url) => {
     }
 };
 
-const enqueueInitialListing = (url) => {
+const enqueueInitialListing = (url, extraUserData = {}) => {
     if (!url) return;
     const absolute = url.startsWith('http') ? url : `${baseOrigin}${url.startsWith('/') ? '' : '/'}${url}`;
     const meta = deriveListingMeta(absolute);
+    const userData = { ...extraUserData };
+    if (userData.label === undefined) userData.label = 'LISTING';
+    if (userData.page === undefined) userData.page = meta.page;
+    if (userData.listingKey === undefined) userData.listingKey = meta.listingKey;
+
     initialRequests.push({
         url: absolute,
-        userData: {
-            label: 'LISTING',
-            page: meta.page,
-            listingKey: meta.listingKey,
-        },
+        userData,
     });
 };
 
-const enqueueInitialProduct = (url) => {
+const enqueueInitialProduct = (url, extraUserData = {}) => {
     if (!url) return;
     const absolute = url.startsWith('http') ? url : `${baseOrigin}${url.startsWith('/') ? '' : '/'}${url}`;
+    const userData = { ...extraUserData };
+    if (userData.label === undefined) userData.label = 'PRODUCT';
+
     initialRequests.push({
         url: absolute,
-        userData: { label: 'PRODUCT' },
+        userData,
     });
 };
 
 if (Array.isArray(startUrls) && startUrls.length) {
-    for (const source of startUrls) {
-        if (source?.requestsFromUrl) {
-            log.warning(`requestsFromUrl is not yet supported in startUrls (skipping ${source.requestsFromUrl})`);
-            continue;
-        }
-        const targetUrl = source?.url ?? '';
-        if (!targetUrl) continue;
-        if (targetUrl.includes('/pr/')) {
-            enqueueInitialProduct(targetUrl);
+    const requestList = await Actor.openRequestList('INITIAL_START_URLS', startUrls);
+    let sourceRequest;
+    // Drain the list so remote request sources are loaded.
+    while ((sourceRequest = await requestList.fetchNextRequest())) {
+        const targetUrl = sourceRequest.url;
+        if (targetUrl?.includes('/pr/') || sourceRequest.userData?.label === 'PRODUCT') {
+            enqueueInitialProduct(targetUrl, sourceRequest.userData);
         } else {
-            enqueueInitialListing(targetUrl);
+            enqueueInitialListing(targetUrl, sourceRequest.userData);
         }
+        await requestList.markRequestHandled(sourceRequest);
     }
 }
 
