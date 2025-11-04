@@ -624,18 +624,21 @@ async function main() {
 
                 if (label === 'CATEGORY') {
                     const links = findProductLinks($, effectiveUrl);
-                    crawlerLog.info(`CATEGORY ${effectiveUrl} -> found ${links.length} product links`);
+                    const structuredItems = extractItemListProducts($, toAbs, effectiveUrl);
+                    const structuredUrls = structuredItems.map((item) => item.product_url).filter(Boolean);
+                    const allDiscovered = [...new Set([...links, ...structuredUrls])];
+                    crawlerLog.info(`CATEGORY ${effectiveUrl} -> found ${links.length} anchor links, ${structuredUrls.length} structured links (unique ${allDiscovered.length})`);
 
                     const remaining = RESULTS_WANTED - saved;
                     if (remaining <= 0) return;
 
                     const filteredLinks = dedupe
-                        ? links.filter((link) => {
+                        ? allDiscovered.filter((link) => {
                             if (enqueuedProductUrls.has(link)) return false;
                             enqueuedProductUrls.add(link);
                             return true;
                         })
-                        : links;
+                        : allDiscovered;
 
                     if (collectDetails) {
                         const toEnqueue = filteredLinks.slice(0, Math.max(0, remaining));
@@ -643,7 +646,6 @@ async function main() {
                             await enqueueLinks({ urls: toEnqueue, userData: { label: 'PRODUCT' } });
                         }
                     } else {
-                        const structuredItems = extractItemListProducts($, toAbs, effectiveUrl);
                         const structuredByUrl = new Map(structuredItems.map((item) => [item.product_url, item]));
                         const toPush = filteredLinks.slice(0, Math.max(0, remaining)).map((productUrl) => {
                             const structured = structuredByUrl.get(productUrl);
