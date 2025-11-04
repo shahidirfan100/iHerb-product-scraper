@@ -782,7 +782,7 @@ async function main() {
                     session.userData.refererChain = chain.slice(-5);
                 },
             ],
-            throwOnBlocked: false,
+            // 'throwOnBlocked' removed to match Crawlee HttpCrawlerOptions schema (was causing ArgumentError)
             async requestHandler({ request, $, enqueueLinks, log: crawlerLog, response, session }) {
                 const effectiveUrl = request.loadedUrl || request.url;
                 const status = response?.statusCode;
