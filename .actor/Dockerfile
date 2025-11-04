@@ -9,7 +9,11 @@ USER root
 WORKDIR /usr/src/app
 
 COPY package*.json ./
-RUN npm ci --omit=dev --no-audit --no-fund --prefer-offline --unsafe-perm && npm cache clean --force
+RUN if [ -f package-lock.json ]; then \
+        npm ci --omit=dev --no-audit --no-fund --prefer-offline --unsafe-perm; \
+    else \
+        npm install --omit=dev --no-audit --no-fund --prefer-offline --unsafe-perm; \
+    fi && npm cache clean --force
 
 COPY . .
 
