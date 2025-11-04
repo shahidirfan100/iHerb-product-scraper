@@ -477,8 +477,10 @@ function isPathAllowed(path, rules) {
 await Actor.init();
 
 async function main() {
+    log.info('=== iHerb Product Scraper Starting ===');
     try {
         const input = (await Actor.getInput()) || {};
+        log.info(`Input received: ${JSON.stringify(input, null, 2)}`);
         const {
             keyword = '',
             category = '',
@@ -505,7 +507,17 @@ async function main() {
 
         const baseOrigin = resolveBaseOrigin(location);
         const proxyConf = proxyConfiguration ? await Actor.createProxyConfiguration({ ...proxyConfiguration }) : undefined;
-        await ensureRobotsAllowed(baseOrigin, proxyConf);
+        
+        log.info(`Base origin resolved to: ${baseOrigin}`);
+        log.info(`Proxy configuration: ${proxyConf ? 'enabled' : 'disabled'}`);
+        
+        try {
+            await ensureRobotsAllowed(baseOrigin, proxyConf);
+            log.info('robots.txt check passed');
+        } catch (err) {
+            log.error(`robots.txt check failed: ${err.message}`);
+            throw err;
+        }
 
         log.info('iHerb product scraper started...');
         await Dataset.open('iherb-products');
@@ -580,6 +592,8 @@ async function main() {
         if (startUrl) initialEntries.push(startUrl);
         if (url) initialEntries.push(url);
 
+        log.info(`Initial entries before expansion: ${initialEntries.length} (keyword='${keyword}', category='${category}')`);
+
         async function expandRequestsFromUrl(entries) {
             const expanded = [];
             for (const entry of entries) {
@@ -629,9 +643,14 @@ async function main() {
             .map((entry) => normalizeStartEntry(entry))
             .filter(Boolean);
 
-        if (!normalizedInitial.length) normalizedInitial = [normalizeStartEntry(buildStartUrl(keyword, category))].filter(Boolean);
+        if (!normalizedInitial.length) {
+            const fallbackUrl = buildStartUrl(keyword, category);
+            log.info(`No start URLs provided; using fallback: ${fallbackUrl}`);
+            normalizedInitial = [normalizeStartEntry(fallbackUrl)].filter(Boolean);
+        }
 
         const initialRequests = dedupeRequests(normalizedInitial);
+        log.info(`After normalization and dedupe: ${initialRequests.length} requests ready`);
 
         const requestQueue = await Actor.openRequestQueue();
         const warmupUrl = new URL('/', baseOrigin).href;
@@ -640,6 +659,11 @@ async function main() {
             await requestQueue.addRequest(req);
         }
         log.info(`Warmup queued for ${warmupUrl}. Initial requests queued: ${initialRequests.length}.`);
+        if (initialRequests.length > 0) {
+            log.info(`First request: ${JSON.stringify(initialRequests[0])}`);
+        } else {
+            log.warning('No initial requests generated! Check keyword/category/startUrls input.');
+        }
 
         let saved = 0;
         const seenProducts = new Set();
@@ -787,6 +811,7 @@ async function main() {
                 }
 
                 if (label === 'CATEGORY') {
+                    crawlerLog.info(`Processing CATEGORY page: ${effectiveUrl}`);
                     const links = findProductLinks($, effectiveUrl);
                     const structuredItems = extractItemListProducts($, toAbs, effectiveUrl);
                     const nextData = extractNextData($);
@@ -1026,9 +1051,19 @@ async function main() {
         if (!saved) {
             log.warning('No products were saved. Verify start URLs/keywords and consider providing cookies or residential proxy to bypass geo or bot restrictions.');
         }
+        log.info('=== iHerb Product Scraper Completed Successfully ===');
+    } catch (err) {
+        log.error(`=== iHerb Product Scraper Failed ===`);
+        log.error(`Error: ${err.message}`);
+        log.error(`Stack: ${err.stack}`);
+        throw err;
     } finally {
         await Actor.exit();
     }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch(err => {
+    console.error('Fatal error in main():');
+    console.error(err);
+    process.exit(1);
+});
