@@ -17,7 +17,42 @@ const headerGenerator = new HeaderGenerator({
     browsers: USER_AGENT_HEADERS,
     devices: ['desktop'],
     operatingSystems: ['windows', 'macos'],
+    httpVersion: '2',
 });
+
+const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+function buildClientHintFallbacks(headers) {
+    const ua = headers['User-Agent'] || headers['user-agent'] || '';
+    const platform = ua.includes('Mac OS X') ? '"macOS"' : '"Windows"';
+    const brands = headers['sec-ch-ua'] || '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"';
+    return {
+        'sec-ch-ua': brands,
+        'sec-ch-ua-mobile': headers['sec-ch-ua-mobile'] || '?0',
+        'sec-ch-ua-platform': headers['sec-ch-ua-platform'] || platform,
+    };
+}
+
+function createFingerprint(localeOverride) {
+    const headers = headerGenerator.getHeaders({
+        httpVersion: '2',
+        locales: localeOverride ? [localeOverride] : undefined,
+    });
+    const normalized = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, value]));
+    const clientHints = buildClientHintFallbacks(normalized);
+    const defaults = {
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Pragma': 'no-cache',
+        'Cache-Control': 'no-cache',
+    };
+
+    return {
+        headers: { ...defaults, ...clientHints, ...normalized },
+        clientHints,
+    };
+}
 
 function buildCookieHeader(raw, jsonInput) {
     const merged = [];
@@ -465,8 +500,8 @@ async function main() {
 
         const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : Number.MAX_SAFE_INTEGER;
         const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 999;
-        const MAX_CONCURRENCY = Number.isFinite(+MAX_CONCURRENCY_RAW) && +MAX_CONCURRENCY_RAW > 0 ? Math.min(50, Math.max(1, +MAX_CONCURRENCY_RAW)) : 10;
-        const MAX_REQUEST_RETRIES = Number.isFinite(+MAX_REQUEST_RETRIES_RAW) && +MAX_REQUEST_RETRIES_RAW >= 0 ? Math.min(10, Math.max(0, +MAX_REQUEST_RETRIES_RAW)) : 3;
+        const MAX_CONCURRENCY = Number.isFinite(+MAX_CONCURRENCY_RAW) && +MAX_CONCURRENCY_RAW > 0 ? Math.min(20, Math.max(1, +MAX_CONCURRENCY_RAW)) : 6;
+        const MAX_REQUEST_RETRIES = Number.isFinite(+MAX_REQUEST_RETRIES_RAW) && +MAX_REQUEST_RETRIES_RAW >= 0 ? Math.min(8, Math.max(0, +MAX_REQUEST_RETRIES_RAW)) : 5;
 
         const baseOrigin = resolveBaseOrigin(location);
         const proxyConf = proxyConfiguration ? await Actor.createProxyConfiguration({ ...proxyConfiguration }) : undefined;
@@ -481,6 +516,7 @@ async function main() {
 
         const cookieHeader = buildCookieHeader(cookies, cookiesJson);
         const acceptLanguageHeader = typeof language === 'string' && language.trim() ? language.trim() : null;
+        const localeForHeaders = acceptLanguageHeader ? acceptLanguageHeader.split(',')[0] : undefined;
 
         const cleanText = (html) => {
             if (!html) return '';
@@ -598,6 +634,8 @@ async function main() {
         const initialRequests = dedupeRequests(normalizedInitial);
 
         const requestQueue = await Actor.openRequestQueue();
+        const warmupUrl = new URL('/', baseOrigin).href;
+        await requestQueue.addRequest({ url: warmupUrl, userData: { label: 'WARMUP' }, forefront: true });
         for (const req of initialRequests) {
             await requestQueue.addRequest(req);
         }
@@ -654,20 +692,69 @@ async function main() {
                     maxUsageCount: 40,
                 },
                 blockedStatusCodes: [403, 429, 503],
+                createSessionFunction: async (sessionPool) => {
+                    const session = await sessionPool.defaultCreateSessionFunction();
+                    const fingerprint = createFingerprint(localeForHeaders);
+                    session.userData.fingerprint = fingerprint;
+                    session.userData.headers = fingerprint.headers;
+                    session.userData.clientHints = fingerprint.clientHints;
+                    session.userData.refererChain = [];
+                    session.userData.requestDelays = 0;
+                    return session;
+                },
             },
             persistCookiesPerSession: true,
             maxConcurrency: MAX_CONCURRENCY,
+            minConcurrency: Math.min(2, MAX_CONCURRENCY),
+            autoscaledPoolOptions: {
+                minConcurrency: 1,
+                desiredConcurrency: MAX_CONCURRENCY,
+                scaleDownStepRatio: 0.5,
+                scaleUpStepRatio: 0.5,
+            },
             requestHandlerTimeoutSecs: 90,
             navigationTimeoutSecs: 60,
             preNavigationHooks: [
                 async ({ request, session }) => {
-                    const headers = session?.userData?.headers || headerGenerator.getHeaders({
-                        locales: acceptLanguageHeader ? [acceptLanguageHeader.split(',')[0]] : undefined,
-                    });
-                    if (session) session.userData.headers = headers;
+                    const fingerprint = session?.userData?.fingerprint || createFingerprint(localeForHeaders);
+                    if (session && !session.userData?.fingerprint) {
+                        session.userData.fingerprint = fingerprint;
+                        session.userData.headers = fingerprint.headers;
+                        session.userData.clientHints = fingerprint.clientHints;
+                        session.userData.refererChain = [];
+                    }
+
+                    const headers = { ...(fingerprint.headers || {}), ...(session?.userData?.headers || {}) };
+
+                    if (acceptLanguageHeader) headers['Accept-Language'] = acceptLanguageHeader;
+                    if (cookieHeader && !headers.Cookie) headers.Cookie = cookieHeader;
+
+                    const refererChain = session?.userData?.refererChain || [];
+                    const referer = refererChain.length ? refererChain[refererChain.length - 1] : new URL(baseOrigin).origin;
+                    if (referer && referer !== request.url) headers['Referer'] = referer;
+                    headers['Sec-Fetch-Site'] = referer && referer !== request.url ? 'same-origin' : 'none';
+                    headers['Sec-Fetch-Mode'] = 'navigate';
+                    headers['Sec-Fetch-Dest'] = 'document';
+
                     request.headers = { ...(request.headers || {}), ...headers };
-                    if (acceptLanguageHeader) request.headers['Accept-Language'] = acceptLanguageHeader;
-                    if (cookieHeader && !request.headers.Cookie) request.headers.Cookie = cookieHeader;
+
+                    if (session) {
+                        const delay = randomBetween(1200, 3200) + session.id.length * 10;
+                        session.userData.requestDelays = delay;
+                        await Actor.sleep(delay);
+                    } else {
+                        await Actor.sleep(randomBetween(1200, 2200));
+                    }
+                },
+            ],
+            postNavigationHooks: [
+                async ({ request, session }) => {
+                    if (!session) return;
+                    const chain = session.userData?.refererChain || [];
+                    if (!chain.length || chain[chain.length - 1] !== request.url) {
+                        chain.push(request.url);
+                    }
+                    session.userData.refererChain = chain.slice(-5);
                 },
             ],
             throwOnBlocked: false,
@@ -678,6 +765,7 @@ async function main() {
                 if (status === 403 || status === 429 || status === 503) {
                     crawlerLog.warning(`Blocked with status ${status} at ${effectiveUrl}; retiring session and retrying`);
                     if (session) session.markBad();
+                    await Actor.sleep(randomBetween(2000, 5000));
                     throw new Error(`Blocked with status ${status}`);
                 }
 
@@ -685,11 +773,17 @@ async function main() {
                     crawlerLog.warning(`Bot challenge detected at ${effectiveUrl}, skipping`);
                     skipStats.captcha++;
                     if (session) session.markBad();
+                    await Actor.sleep(randomBetween(1500, 3000));
                     return;
                 }
 
                 const label = request.userData?.label || detectLabelFromUrl(effectiveUrl);
                 const pageNo = request.userData?.pageNo || 1;
+
+                if (label === 'WARMUP') {
+                    crawlerLog.debug(`Warmup request succeeded for ${effectiveUrl}`);
+                    return;
+                }
 
                 if (label === 'CATEGORY') {
                     const links = findProductLinks($, effectiveUrl);
