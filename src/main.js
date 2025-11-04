@@ -718,7 +718,19 @@ async function main() {
                 },
                 blockedStatusCodes: [403, 429, 503],
                 createSessionFunction: async (sessionPool) => {
-                    const session = await sessionPool.defaultCreateSessionFunction();
+                    // sessionPool API changed between Crawlee versions; try common factory methods
+                    let session;
+                    if (typeof sessionPool.newSession === 'function') {
+                        session = await sessionPool.newSession();
+                    } else if (typeof sessionPool.createSession === 'function') {
+                        session = await sessionPool.createSession();
+                    } else if (typeof sessionPool.defaultCreateSessionFunction === 'function') {
+                        session = await sessionPool.defaultCreateSessionFunction();
+                    } else {
+                        // Last resort: call sessionPool.getSession() if available
+                        if (typeof sessionPool.getSession === 'function') session = await sessionPool.getSession();
+                        else throw new Error('No compatible session factory found on sessionPool');
+                    }
                     const fingerprint = createFingerprint(localeForHeaders);
                     session.userData.fingerprint = fingerprint;
                     session.userData.headers = fingerprint.headers;
