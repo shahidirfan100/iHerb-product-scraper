@@ -639,6 +639,7 @@ async function main() {
         for (const req of initialRequests) {
             await requestQueue.addRequest(req);
         }
+        log.info(`Warmup queued for ${warmupUrl}. Initial requests queued: ${initialRequests.length}.`);
 
         let saved = 0;
         const seenProducts = new Set();
@@ -795,6 +796,9 @@ async function main() {
                     const structuredUrls = structuredCandidates.map((item) => item.product_url).filter(Boolean);
                     const allDiscovered = [...new Set([...links, ...structuredUrls])];
                     crawlerLog.info(`CATEGORY ${effectiveUrl} -> found ${links.length} anchor links, ${structuredUrls.length} structured links (Next.js: ${nextDataItems.length}), unique ${allDiscovered.length}`);
+                    if (!allDiscovered.length) {
+                        crawlerLog.warning(`CATEGORY ${effectiveUrl} -> no discoverable product links. Verify cookies/location and consider revisiting with fresh session.`);
+                    }
 
                     const remaining = RESULTS_WANTED - saved;
                     if (remaining <= 0) return;
@@ -811,6 +815,8 @@ async function main() {
                         const toEnqueue = filteredLinks.slice(0, Math.max(0, remaining));
                         if (toEnqueue.length) {
                             await enqueueLinks({ urls: toEnqueue, userData: { label: 'PRODUCT' } });
+                        } else {
+                            crawlerLog.debug(`CATEGORY ${effectiveUrl} -> filtered link list empty (remaining=${remaining}, dedupe=${dedupe})`);
                         }
                     } else {
                         const structuredByUrl = new Map(structuredCandidates.map((item) => [item.product_url, item]));
@@ -826,6 +832,7 @@ async function main() {
                         if (toPush.length) {
                             await Dataset.pushData(toPush);
                             saved += toPush.length;
+                            crawlerLog.info(`CATEGORY ${effectiveUrl} -> pushed ${toPush.length} listing entries (saved=${saved})`);
                         }
                     }
 
@@ -995,6 +1002,7 @@ async function main() {
 
                         await Dataset.pushData(product);
                         saved++;
+                        crawlerLog.info(`PRODUCT ${effectiveUrl} saved (total=${saved})`);
                     } catch (err) {
                         crawlerLog.error(`PRODUCT ${request.url} failed: ${err.message}`);
                     }
