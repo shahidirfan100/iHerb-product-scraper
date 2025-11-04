@@ -467,9 +467,6 @@ crawler = new PlaywrightCrawler({
             }
         },
     ],
-    navigationOptions: {
-        waitUntil: 'domcontentloaded',
-    },
     postNavigationHooks: [
         async ({ page, session }) => {
             if (await looksLikeChallengePage(page)) {
