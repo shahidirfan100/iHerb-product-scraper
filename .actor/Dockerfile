@@ -8,17 +8,11 @@ USER root
 WORKDIR /usr/src/app
 
 COPY package*.json ./
-RUN if [ -f package-lock.json ]; then \
-        npm ci --omit=dev --no-audit --no-fund --prefer-offline --unsafe-perm; \
-    else \
-        npm install --omit=dev --no-audit --no-fund --prefer-offline --unsafe-perm; \
-    fi && npm cache clean --force
-
-RUN npx playwright install --with-deps chromium
+RUN npm install --omit=dev --no-audit --no-fund --prefer-offline --unsafe-perm && npm cache clean --force
 
 COPY . .
 
-RUN npm prune --omit=dev && chown -R myuser:myuser /usr/src/app
+RUN npx playwright install --with-deps chromium && chown -R myuser:myuser /usr/src/app
 
 USER myuser
 

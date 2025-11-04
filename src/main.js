@@ -197,6 +197,8 @@ for (const req of initialRequests) {
     await requestQueue.addRequest(req);
 }
 
+log.info(`Seeded ${initialRequests.length} initial request${initialRequests.length === 1 ? '' : 's'}.`);
+
 const cookiesForContext = parseCookies(rawCookies, cookiesJson, baseOrigin);
 
 const listingStats = new Map();
@@ -391,6 +393,15 @@ crawler = new PlaywrightCrawler({
             },
         },
     },
+    gotoFunction: async ({ page, request, gotoOptions, log: crawlerLog }) => {
+        const mergedOptions = {
+            waitUntil: 'networkidle',
+            timeout: 45000,
+            ...gotoOptions,
+        };
+        crawlerLog.debug(`Navigating to ${request.url}`);
+        return page.goto(request.url, mergedOptions);
+    },
     launchContext: {
         launcher: chromium,
         launchOptions: {
@@ -414,7 +425,7 @@ crawler = new PlaywrightCrawler({
                 await page.route('**/*', (route) => {
                     const type = route.request().resourceType();
                     const url = route.request().url();
-                    if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+                    if (['image', 'media', 'font'].includes(type)) {
                         return route.abort();
                     }
                     if (
@@ -479,6 +490,16 @@ crawler = new PlaywrightCrawler({
     async requestHandler({ page, request, log: crawlerLog, crawler: crawlerInstance }) {
         const { label } = request.userData;
         crawlerLog.info(`Processing ${label ?? 'UNKNOWN'}: ${request.url}`);
+
+        try {
+            await page.waitForSelector('script#__NEXT_DATA__', { timeout: 20000 });
+        } catch (err) {
+            if (await looksLikeChallengePage(page)) {
+                crawlerLog.warning('Challenge page detected before Next.js payload.');
+                throw err;
+            }
+            crawlerLog.warning(`__NEXT_DATA__ not found within timeout on ${request.url}: ${err.message}`);
+        }
 
         const nextData = await extractNextData(page);
         if (!nextData?.props?.pageProps) {
