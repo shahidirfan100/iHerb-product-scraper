@@ -1,0 +1,17 @@
+{
+  "name": "iherb-product-scraper",
+  "version": "1.0.0",
+  "description": "Lightweight iHerb product scraper using Cheerio (Crawlee + gotScraping).",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "dependencies": {
+    "apify": "^3.4.5",
+    "crawlee": "^3.14.1",
+    "cheerio": "^1.0.0-rc.12",
+    "got-scraping": "^4.0.3",
+    "jsdom": "^27.1.0",
+    "header-generator": "^2.1.75"
+  }
+}
