@@ -4,7 +4,7 @@ RUN npm ls crawlee apify puppeteer playwright
 
 WORKDIR /usr/src/app
 
-COPY --chown=myuser:myuser package*.json Dockerfile ./
+COPY --chown=myuser:myuser package*.json ./
 
 RUN npm --quiet set progress=false \
     && npm install --omit=dev --omit=optional \
