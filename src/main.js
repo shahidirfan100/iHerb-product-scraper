@@ -217,15 +217,17 @@ const stopIfNeeded = async () => {
 };
 
 const extractNextData = async (page) => {
-    const scriptLocator = page.locator('script#__NEXT_DATA__');
-    if (!(await scriptLocator.count())) return null;
-    const payload = await scriptLocator.textContent();
-    if (!payload) return null;
-    try {
-        return JSON.parse(payload);
-    } catch {
-        return null;
-    }
+    return page.evaluate(() => {
+        const fromWindow = window.__NEXT_DATA__;
+        if (fromWindow) return fromWindow;
+        const script = document.querySelector('script#__NEXT_DATA__');
+        if (!script) return null;
+        try {
+            return JSON.parse(script.textContent);
+        } catch (err) {
+            return null;
+        }
+    });
 };
 
 const looksLikeChallengePage = async (page) => {
@@ -285,15 +287,19 @@ const pushListingDatasetItem = async (origin, item) => {
     if (!productId) return;
     const productUrl = buildProductUrl(origin, item.slug, productId);
     if (!productUrl) return;
+    const priceValue = item.pricing?.price ?? item.price?.value ?? item.price;
+    const currencyValue = item.pricing?.currency ?? item.price?.currency ?? item.currency;
+    const ratingValue = item.rating ?? item.averageRating ?? item.reviews?.rating;
+    const reviewCount = item.numberOfReviews ?? item.reviewsCount ?? item.reviews?.total;
     await Dataset.pushData({
         product_url: productUrl,
         product_id: String(productId),
         product_title: item.displayName,
         brand: item.brand?.name ?? item.brand,
-        price: item.pricing?.price?.toString(),
-        currency: item.pricing?.currency,
-        rating: item.rating,
-        reviews_count: item.numberOfReviews,
+        price: priceValue ? String(priceValue) : undefined,
+        currency: currencyValue ?? undefined,
+        rating: ratingValue,
+        reviews_count: reviewCount,
         image: item.images?.[0]?.url ?? item.imageUrl,
     });
     savedCount++;
@@ -301,15 +307,19 @@ const pushListingDatasetItem = async (origin, item) => {
 
 const pushProductDatasetItem = async (url, product) => {
     const productId = product.partNumber || product.id;
+    const priceValue = product.pricing?.price ?? product.price?.value ?? product.price;
+    const currencyValue = product.pricing?.currency ?? product.price?.currency ?? product.currency;
+    const ratingValue = product.rating ?? product.averageRating ?? product.reviews?.rating;
+    const reviewCount = product.numberOfReviews ?? product.reviewsCount ?? product.reviews?.total;
     await Dataset.pushData({
         product_url: url,
         product_id: productId ? String(productId) : undefined,
         product_title: product.displayName,
         brand: product.brand?.name ?? product.brand,
-        price: product.pricing?.price?.toString(),
-        currency: product.pricing?.currency,
-        rating: product.rating,
-        reviews_count: product.numberOfReviews,
+        price: priceValue ? String(priceValue) : undefined,
+        currency: currencyValue ?? undefined,
+        rating: ratingValue,
+        reviews_count: reviewCount,
         availability: product.inventory?.availability,
         description_html: product.overview,
         description_text: product.description,
@@ -399,15 +409,8 @@ crawler = new PlaywrightCrawler({
         launchOptions: {
             headless: true,
             args: [
-                '--disable-blink-features=AutomationControlled',
-                '--disable-extensions',
-                '--disable-default-apps',
                 '--disable-dev-shm-usage',
                 '--no-sandbox',
-                '--disable-web-security',
-                '--disable-background-timer-throttling',
-                '--disable-renderer-backgrounding',
-                '--disable-features=IsolateOrigins,site-per-process,TranslateUI',
             ],
         },
     },
@@ -415,25 +418,17 @@ crawler = new PlaywrightCrawler({
         async (ctx) => {
             const { page, session, browserController } = ctx;
 
-            ctx.gotoOptions ??= {};
-            ctx.gotoOptions.waitUntil ??= 'domcontentloaded';
-            ctx.gotoOptions.timeout ??= 45000;
+            const originalGoto = ctx.gotoOptions ?? {};
+            ctx.gotoOptions = {
+                ...originalGoto,
+                waitUntil: originalGoto.waitUntil ?? 'domcontentloaded',
+                timeout: originalGoto.timeout ?? 60000,
+            };
 
             if (!page.__blockResourcesApplied) {
                 await page.route('**/*', (route) => {
                     const type = route.request().resourceType();
-                    const url = route.request().url();
-                    if (['image', 'media', 'font'].includes(type)) {
-                        return route.abort();
-                    }
-                    if (
-                        url.includes('google-analytics') ||
-                        url.includes('doubleclick.net') ||
-                        url.includes('googletagmanager') ||
-                        url.includes('facebook.net') ||
-                        url.includes('hotjar.com') ||
-                        url.includes('clarity.ms')
-                    ) {
+                    if (['image', 'media'].includes(type)) {
                         return route.abort();
                     }
                     return route.continue();
@@ -480,6 +475,7 @@ crawler = new PlaywrightCrawler({
         async ({ page, session }) => {
             if (await looksLikeChallengePage(page)) {
                 log.warning('Bot challenge detected, retiring session.');
+                session?.markBad?.();
                 if (session) session.retire();
                 throw new Error('Encountered bot challenge / Cloudflare gate');
             }
@@ -489,23 +485,55 @@ crawler = new PlaywrightCrawler({
         const { label } = request.userData;
         crawlerLog.info(`Processing ${label ?? 'UNKNOWN'}: ${request.url}`);
 
-        try {
-            await page.waitForSelector('script#__NEXT_DATA__', { timeout: 20000 });
-        } catch (err) {
-            if (await looksLikeChallengePage(page)) {
-                crawlerLog.warning('Challenge page detected before Next.js payload.');
-                throw err;
-            }
-            crawlerLog.warning(`__NEXT_DATA__ not found within timeout on ${request.url}: ${err.message}`);
+        let nextData = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            await page.waitForFunction(
+                () => typeof window !== 'undefined' && !!window.__NEXT_DATA__?.props?.pageProps,
+                { timeout: 20000 }
+            ).catch(() => {});
+            nextData = await extractNextData(page);
+            if (nextData?.props?.pageProps) break;
+            await page.waitForTimeout(1500);
         }
 
-        const nextData = await extractNextData(page);
         if (!nextData?.props?.pageProps) {
             crawlerLog.warning('No Next.js payload found, skipping.');
+            session?.markBad?.();
             return;
         }
 
         const pageProps = nextData.props.pageProps;
+        session?.markGood?.();
+
+        const collectFromPageProps = (props) => {
+            const pools = [];
+            if (Array.isArray(props.products)) pools.push(props.products);
+            if (Array.isArray(props.productSummaries)) pools.push(props.productSummaries);
+            if (props.productGrid) {
+                const grid = props.productGrid;
+                if (Array.isArray(grid.products)) pools.push(grid.products);
+                if (Array.isArray(grid.items)) pools.push(grid.items);
+                if (Array.isArray(grid.productSummaries)) pools.push(grid.productSummaries);
+                if (Array.isArray(grid.results)) pools.push(grid.results);
+            }
+            if (props.category?.products) pools.push(props.category.products);
+            if (props.category?.productList?.items) pools.push(props.category.productList.items);
+            if (props.results?.items) pools.push(props.results.items);
+            if (props.searchResults?.products) pools.push(props.searchResults.products);
+            if (props.searchResults?.items) pools.push(props.searchResults.items);
+
+            const merged = [];
+            for (const arr of pools) {
+                if (!Array.isArray(arr)) continue;
+                for (const item of arr) {
+                    if (!item) continue;
+                    merged.push(item);
+                }
+            }
+            return merged;
+        };
+
+        const listingProducts = collectFromPageProps(pageProps);
 
         if (label === 'PRODUCT' || pageProps.product) {
             if (shouldStop()) return;
@@ -526,16 +554,89 @@ crawler = new PlaywrightCrawler({
             crawlerLog.info(`Saved product ${savedCount}${Number.isFinite(resultsWanted) ? `/${resultsWanted}` : ''}`);
             await stopIfNeeded();
             return;
-        }
+        } else {
+            let productsToHandle = listingProducts;
 
-        if (pageProps.products && Array.isArray(pageProps.products)) {
-            crawlerLog.info(`Found ${pageProps.products.length} products on listing page.`);
+            if (!productsToHandle.length) {
+                const domResults = await page.evaluate(() => {
+                    const items = [];
+                    const seen = new Set();
+                    const anchors = Array.from(document.querySelectorAll('a[href*="/pr/"]'));
+                    for (const anchor of anchors) {
+                        const href = anchor.href;
+                        if (!href || seen.has(href)) continue;
+                        seen.add(href);
+                        const titleNode =
+                            anchor.querySelector('h1, h2, h3, [data-element="product-title"], [data-testid="product-card-title"]') ??
+                            anchor;
+                        const title = titleNode.textContent?.trim();
+                        if (!title) continue;
+                        const priceNode =
+                            anchor.querySelector('[data-element="product-price"], [data-testid="product-card-price"]') ??
+                            anchor.closest('[data-element="product-card"]')?.querySelector('[data-element="product-price"]');
+                        const priceText = priceNode?.textContent?.trim() ?? null;
+                        const priceTextNormalized = priceText?.replace(/\s+/g, ' ') ?? null;
+                        const partMatch = href.match(/\/pr\/[^/]+\/([^/?#]+)/);
+                        const slugMatch = href.match(/\/pr\/([^/?#]+)/);
+                        items.push({
+                            href,
+                            title,
+                            priceText: priceTextNormalized,
+                            partNumber: partMatch ? partMatch[1] : undefined,
+                            slug: slugMatch ? slugMatch[1] : undefined,
+                        });
+                    }
+                    return items;
+                });
+
+                if (domResults.length) {
+                    crawlerLog.info(`Falling back to DOM extraction, found ${domResults.length} product anchors.`);
+                    productsToHandle = domResults.map((item) => ({
+                        partNumber: item.partNumber,
+                        slug: item.slug ?? '',
+                        displayName: item.title,
+                        pricing: (() => {
+                            if (!item.priceText) return undefined;
+                            const numeric = Number(item.priceText.replace(/[^0-9.,]/g, '').replace(',', '.'));
+                            if (Number.isFinite(numeric)) return { price: numeric };
+                            return undefined;
+                        })(),
+                        currency: (() => {
+                            if (!item.priceText) return undefined;
+                            const match = item.priceText.match(/[A-Z]{3}/);
+                            return match ? match[0] : undefined;
+                        })(),
+                        href: item.href,
+                    }));
+                }
+            }
+
+            if (!productsToHandle.length) {
+                crawlerLog.warning(`No products discovered on listing ${request.url}`);
+                return;
+            }
+
+            crawlerLog.info(`Found ${productsToHandle.length} products on listing page.`);
             const newProductRequests = [];
 
-            for (const item of pageProps.products) {
+            for (const item of productsToHandle) {
                 if (shouldStop()) break;
                 const productId = item.partNumber || item.id;
                 const productUrl = buildProductUrl(baseOrigin, item.slug, productId);
+                if (!productUrl && item.href) {
+                    const normalized = item.href.startsWith('http') ? item.href : `${baseOrigin}${item.href}`;
+                    if (normalized.includes('/pr/')) {
+                        const dedupeKey = normalized;
+                        if (dedupe && productSeenSet.has(dedupeKey)) continue;
+                        if (dedupe) productSeenSet.add(dedupeKey);
+                        await Dataset.pushData({
+                            product_url: normalized,
+                            product_title: item.displayName ?? item.title,
+                        });
+                        savedCount++;
+                        continue;
+                    }
+                }
                 if (!productUrl) continue;
 
                 if (dedupe) {
@@ -566,9 +667,12 @@ crawler = new PlaywrightCrawler({
             } else {
                 await stopIfNeeded();
             }
-        } else {
-            crawlerLog.warning(`Unhandled label/pageProps combination for ${request.url}`);
         }
+    },
+    failedRequestHandler: async ({ request, error, session }) => {
+        log.error(`Request failed ${request.url}: ${error?.message}`);
+        session?.markBad?.();
+        session?.retire?.();
     },
 });
 
