@@ -1,10 +1,6 @@
 import { Actor, log } from 'apify';
 import { Dataset, PlaywrightCrawler } from 'crawlee';
-import { chromium as playwrightChromium } from 'playwright-extra';
-import StealthPlugin from 'playwright-extra-plugin-stealth';
-
-const stealthPlugin = new StealthPlugin();
-playwrightChromium.use(stealthPlugin);
+import { chromium } from 'playwright';
 
 /**
  * Normalise origin/location input into a usable base URL.
@@ -236,6 +232,50 @@ const looksLikeChallengePage = async (page) => {
     return bodyText.includes('cf-chl') || bodyText.includes('cloudflare') || bodyText.includes('bot detection');
 };
 
+const applyStealthScripts = async (page) => {
+    if (page.context().__stealthApplied) return;
+    page.context().__stealthApplied = true;
+    await page.addInitScript(() => {
+        // Hide webdriver flag.
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+        // Provide fake chrome object.
+        window.chrome ??= { runtime: {} };
+
+        // Pretend to have plugins and languages.
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4],
+        });
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en'],
+        });
+
+        // Patch permissions query to avoid notification warnings.
+        const originalQuery = navigator.permissions?.query;
+        if (originalQuery) {
+            navigator.permissions.query = (parameters) =>
+                parameters?.name === 'notifications'
+                    ? Promise.resolve({ state: Notification.permission })
+                    : originalQuery(parameters);
+        }
+
+        // Provide stable WebGL vendor.
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function patched(param) {
+            if (param === 37445) return 'Intel Inc.';
+            if (param === 37446) return 'Intel Iris OpenGL Engine';
+            return getParameter.call(this, param);
+        };
+
+        // Remove broken iframe contentWindow.
+        Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+            get() {
+                return window;
+            },
+        });
+    });
+};
+
 const pushListingDatasetItem = async (origin, item) => {
     const productId = item.partNumber || item.id;
     if (!productId) return;
@@ -351,9 +391,8 @@ crawler = new PlaywrightCrawler({
             },
         },
     },
-    playwright: playwrightChromium,
     launchContext: {
-        launcher: playwrightChromium,
+        launcher: chromium,
         launchOptions: {
             headless: true,
             args: [
@@ -407,6 +446,8 @@ crawler = new PlaywrightCrawler({
                     log.warning(`Failed to add cookies to context: ${err.message}`);
                 }
             }
+
+            await applyStealthScripts(page);
 
             const fingerprint = browserController?.fingerprint;
             if (fingerprint) {
