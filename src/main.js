@@ -412,11 +412,12 @@ crawler = new PlaywrightCrawler({
         },
     },
     preNavigationHooks: [
-        async ({ page, session, browserController, gotoOptions }) => {
-            if (gotoOptions) {
-                gotoOptions.waitUntil ??= 'networkidle';
-                gotoOptions.timeout ??= 45000;
-            }
+        async (ctx) => {
+            const { page, session, browserController } = ctx;
+
+            ctx.gotoOptions ??= {};
+            ctx.gotoOptions.waitUntil ??= 'domcontentloaded';
+            ctx.gotoOptions.timeout ??= 45000;
 
             if (!page.__blockResourcesApplied) {
                 await page.route('**/*', (route) => {
