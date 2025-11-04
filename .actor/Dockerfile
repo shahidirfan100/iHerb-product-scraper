@@ -1,7 +1,6 @@
 FROM apify/actor-node-playwright:20
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/lib/playwright \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     NODE_ENV=production \
     APIFY_LOG_LEVEL=INFO
 
@@ -14,6 +13,8 @@ RUN if [ -f package-lock.json ]; then \
     else \
         npm install --omit=dev --no-audit --no-fund --prefer-offline --unsafe-perm; \
     fi && npm cache clean --force
+
+RUN npx playwright install --with-deps chromium
 
 COPY . .
 
