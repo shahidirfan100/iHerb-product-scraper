@@ -58,6 +58,73 @@
           }
         }
       }
+    },
+    "details": {
+      "title": "Product Details",
+      "transformation": {
+        "fields": [
+          "product_title",
+          "brand",
+          "product_id",
+          "price",
+          "currency",
+          "availability",
+          "rating",
+          "reviews_count",
+          "description_text",
+          "images",
+          "product_url"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "product_title": {
+            "label": "Product Title",
+            "format": "text"
+          },
+          "brand": {
+            "label": "Brand",
+            "format": "text"
+          },
+          "product_id": {
+            "label": "Product ID",
+            "format": "text"
+          },
+          "price": {
+            "label": "Price",
+            "format": "text"
+          },
+          "currency": {
+            "label": "Currency",
+            "format": "text"
+          },
+          "availability": {
+            "label": "Availability",
+            "format": "text"
+          },
+          "rating": {
+            "label": "Rating",
+            "format": "number"
+          },
+          "reviews_count": {
+            "label": "Reviews Count",
+            "format": "number"
+          },
+          "description_text": {
+            "label": "Description",
+            "format": "text"
+          },
+          "images": {
+            "label": "Images",
+            "format": "array"
+          },
+          "product_url": {
+            "label": "Product URL",
+            "format": "link"
+          }
+        }
+      }
     }
   }
 }

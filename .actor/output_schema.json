@@ -1,0 +1,21 @@
+{
+    "actorOutputSchemaVersion": 1,
+    "title": "iHerb Product Scraper Output",
+    "properties": {
+        "products": {
+            "type": "string",
+            "title": "Products Dataset",
+            "template": "{{links.apiDefaultDatasetUrl}}/items?view=overview"
+        },
+        "productDetails": {
+            "type": "string",
+            "title": "Detailed Product View",
+            "template": "{{links.apiDefaultDatasetUrl}}/items?view=details"
+        },
+        "summary": {
+            "type": "string",
+            "title": "Run Summary",
+            "template": "{{links.apiRunUrl}}"
+        }
+    }
+}

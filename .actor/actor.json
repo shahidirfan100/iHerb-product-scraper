@@ -1,13 +1,17 @@
 {
-  "actorSpecification": 1,
-  "name": "iherb-product-scraper",
-  "version": "1.0.0",
-  "buildTag": "latest",
-  "dockerfile": "./Dockerfile",
-  "readme": "../README.md",
-  "input": "./input_schema.json",
-  "nodeJsVersion": "22",
-  "storages": {
-    "dataset": "./dataset_schema.json"
-  }
+    "actorSpecification": 1,
+    "name": "iherb-product-scraper",
+    "title": "iHerb Product Scraper",
+    "description": "Scrape product data from iHerb.com using Playwright to bypass anti-bot protection. Extracts comprehensive product information including pricing, reviews, descriptions, and images from both listing and detail pages.",
+    "version": "1.0.0",
+    "meta": {
+        "templateId": "js-crawlee-playwright-chrome",
+        "model": "GitHub Copilot"
+    },
+    "input": "./input_schema.json",
+    "output": "./output_schema.json",
+    "storages": {
+        "dataset": "./dataset_schema.json"
+    },
+    "dockerfile": "../Dockerfile"
 }
