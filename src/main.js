@@ -85,9 +85,14 @@ function buildCookieHeader(raw, jsonInput) {
 function extractNextData($) {
     if (!$) return null;
     const script = $('script#__NEXT_DATA__').html() || $('script[id="__NEXT_DATA__"]').text();
-    if (!script) return null;
+    if (!script) {
+        log.debug('No __NEXT_DATA__ script tag found');
+        return null;
+    }
     try {
-        return JSON.parse(script);
+        const parsed = JSON.parse(script);
+        log.debug(`Successfully parsed __NEXT_DATA__, has pageProps: ${!!parsed?.props?.pageProps}`);
+        return parsed;
     } catch (err) {
         log.debug(`Failed to parse __NEXT_DATA__: ${err.message}`);
         return null;
@@ -117,54 +122,73 @@ function findProductNodeCandidate(root) {
 
 function extractProductFromNextData(nextData, toAbs, effectiveUrl) {
     if (!nextData) return {};
-    const candidate = findProductNodeCandidate(nextData);
-    if (!candidate) return {};
+    
+    // Navigate directly to pageProps.product for product pages
+    const pageProps = nextData?.props?.pageProps;
+    if (!pageProps) {
+        log.debug('No pageProps found in Next.js data');
+        return {};
+    }
+
+    const candidate = pageProps.product || pageProps.initialData?.product;
+    if (!candidate) {
+        log.debug('No product object found in pageProps');
+        return {};
+    }
+
+    log.info('Extracting product from Next.js pageProps.product');
     const product = {};
 
-    const idCandidate = candidate.productId ?? candidate.productID ?? candidate.ProductId ?? candidate.ProductID ?? candidate.id;
+    // Extract product ID
+    const idCandidate = candidate.partNumber ?? candidate.productId ?? candidate.productID ?? candidate.id;
     if (idCandidate) product.product_id = String(idCandidate).trim();
 
-    const nameCandidate = candidate.displayName ?? candidate.name ?? candidate.productName ?? candidate.title ?? candidate.productTitle;
+    // Extract product title/name
+    const nameCandidate = candidate.displayName ?? candidate.name ?? candidate.productName ?? candidate.title;
     if (nameCandidate) product.product_title = String(nameCandidate).trim();
 
+    // Extract brand
     const brandCandidate = candidate.brand?.name ?? candidate.brandName ?? candidate.brand;
     if (brandCandidate) product.brand = String(brandCandidate).trim();
 
-    const skuCandidate = candidate.sku ?? candidate.SKU ?? candidate.code;
+    // Extract SKU
+    const skuCandidate = candidate.sku ?? candidate.SKU ?? candidate.partNumber;
     if (skuCandidate) product.sku = String(skuCandidate).trim();
 
-    const descriptionCandidate = candidate.description ?? candidate.shortDescription ?? candidate.longDescription ?? candidate.bodyHtml;
+    // Extract description
+    const descriptionCandidate = candidate.description ?? candidate.overview ?? candidate.shortDescription ?? candidate.longDescription;
     if (descriptionCandidate) product.description_html = typeof descriptionCandidate === 'string' ? descriptionCandidate : null;
 
-    const pricingNode = candidate.price ?? candidate.pricing ?? candidate.prices ?? candidate.priceInfo ?? candidate.listPrice;
+    // Extract pricing - iHerb uses "pricing" object with "price" and "currency"
+    const pricingNode = candidate.pricing ?? candidate.price;
     if (pricingNode) {
-        const priceValue = pricingNode.value ?? pricingNode.current ?? pricingNode.price ?? pricingNode.amount ?? pricingNode.sale ?? pricingNode.list;
+        const priceValue = pricingNode.price ?? pricingNode.value ?? pricingNode.current ?? pricingNode.amount;
         if (priceValue !== undefined && priceValue !== null) product.price = String(priceValue).trim();
         const currencyCandidate = pricingNode.currency ?? pricingNode.currencyCode ?? pricingNode.isoCurrencyCode;
         if (currencyCandidate) product.currency = String(currencyCandidate).trim();
     }
 
-    const inventoryNode = candidate.inventory ?? candidate.availability ?? candidate.stock ?? candidate.stockStatus;
+    // Extract availability
+    const inventoryNode = candidate.inventory ?? candidate.availability ?? candidate.stock;
     if (inventoryNode) {
         if (typeof inventoryNode === 'string') {
             product.availability = sanitizeAvailability(inventoryNode);
         } else if (inventoryNode.status) {
             product.availability = sanitizeAvailability(inventoryNode.status);
-        } else if (inventoryNode.state) {
-            product.availability = sanitizeAvailability(inventoryNode.state);
+        } else if (inventoryNode.state || inventoryNode.inventoryStatus) {
+            product.availability = sanitizeAvailability(inventoryNode.state ?? inventoryNode.inventoryStatus);
         }
     }
 
-    const ratingNode = candidate.rating ?? candidate.ratings ?? candidate.reviewSummary ?? candidate.reviews;
-    if (ratingNode) {
-        const ratingValue = ratingNode.value ?? ratingNode.rating ?? ratingNode.average ?? ratingNode.avg ?? ratingNode.averageRating;
-        if (ratingValue !== undefined && ratingValue !== null && !Number.isNaN(Number.parseFloat(ratingValue))) {
-            product.rating = Number.parseFloat(ratingValue);
-        }
-        const reviewsCount = ratingNode.count ?? ratingNode.reviewCount ?? ratingNode.total ?? ratingNode.numberOfReviews;
-        if (reviewsCount !== undefined && reviewsCount !== null && !Number.isNaN(Number.parseInt(reviewsCount, 10))) {
-            product.reviews_count = Number.parseInt(reviewsCount, 10);
-        }
+    // Extract ratings - iHerb uses "rating" and "numberOfReviews"
+    const ratingValue = candidate.rating ?? candidate.averageRating;
+    if (ratingValue !== undefined && ratingValue !== null && !Number.isNaN(Number.parseFloat(ratingValue))) {
+        product.rating = Number.parseFloat(ratingValue);
+    }
+    
+    const reviewsCount = candidate.numberOfReviews ?? candidate.reviewCount ?? candidate.reviewsCount;
+    if (reviewsCount !== undefined && reviewsCount !== null && !Number.isNaN(Number.parseInt(reviewsCount, 10))) {
+        product.reviews_count = Number.parseInt(reviewsCount, 10);
     }
 
     const imagesCandidate = candidate.images ?? candidate.imageUrls ?? candidate.gallery ?? candidate.media?.images;
@@ -205,56 +229,78 @@ function extractProductFromNextData(nextData, toAbs, effectiveUrl) {
 
 function extractListProductsFromNextData(nextData, toAbs, baseUrl) {
     if (!nextData) return [];
-    const stack = [nextData];
-    const seen = new Set();
-    const results = new Map();
-
-    const readText = (node, keys) => {
-        for (const key of keys) {
-            if (node[key]) return String(node[key]).trim();
-        }
-        return null;
-    };
-
-    while (stack.length) {
-        const node = stack.pop();
-        if (!node || typeof node !== 'object') continue;
-        if (seen.has(node)) continue;
-        seen.add(node);
-
-        const keys = Object.keys(node);
-        const hasProductId = keys.some((key) => /productid|product_id|itemid|sku|id/i.test(key));
-        const hasUrl = keys.some((key) => /url|href|link/i.test(key));
-
-        if (hasUrl) {
-            const urlCandidate = node.url || node.href || node.link || node.productUrl || node.product_url;
-            const absUrl = typeof urlCandidate === 'string' ? toAbs(urlCandidate, baseUrl) : null;
-            if (absUrl && absUrl.includes('/pr/')) {
-                const productId = readText(node, ['productId', 'productID', 'product_id', 'itemId', 'itemID', 'id']);
-                const productTitle = readText(node, ['displayName', 'productName', 'name', 'title']);
-                const brand = readText(node, ['brand', 'brandName', 'brandname', 'manufacturerName']);
-                const price = readText(node, ['price', 'currentPrice', 'salePrice', 'listPrice']);
-                const currency = readText(node, ['currency', 'currencyCode', 'currencySymbol']);
-
-                const existing = results.get(absUrl) || {};
-                results.set(absUrl, {
-                    ...existing,
-                    product_url: absUrl,
-                    product_id: existing.product_id || productId,
-                    product_title: existing.product_title || productTitle,
-                    brand: existing.brand || brand,
-                    price: existing.price || price,
-                    currency: existing.currency || currency,
-                });
-            }
-        }
-
-        for (const value of Object.values(node)) {
-            if (value && typeof value === 'object') stack.push(value);
-        }
+    
+    // Navigate directly to pageProps.products for category pages
+    const pageProps = nextData?.props?.pageProps;
+    if (!pageProps) {
+        log.debug('No pageProps found in Next.js data');
+        return [];
     }
 
-    return [...results.values()];
+    const productsArray = pageProps.products ?? pageProps.initialData?.products ?? pageProps.searchResults?.products;
+    if (!Array.isArray(productsArray) || productsArray.length === 0) {
+        log.debug('No products array found in pageProps');
+        return [];
+    }
+
+    const results = [];
+    
+    for (const item of productsArray) {
+        if (!item || typeof item !== 'object') continue;
+
+        // Build product URL from partNumber or productId
+        const productId = item.partNumber ?? item.productId ?? item.id;
+        const slug = item.slug ?? item.displayName?.toLowerCase().replace(/[^a-z0-9]+/g, '-') ?? 'product';
+        
+        let productUrl;
+        if (productId) {
+            // iHerb URL format: /pr/{slug}/{productId}
+            productUrl = toAbs(`/pr/${slug}/${productId}`, baseUrl);
+        } else if (item.url ?? item.href ?? item.link) {
+            productUrl = toAbs(item.url ?? item.href ?? item.link, baseUrl);
+        }
+
+        if (!productUrl || !productUrl.includes('/pr/')) continue;
+
+        const product = {
+            product_url: productUrl,
+        };
+
+        // Extract basic info
+        if (productId) product.product_id = String(productId).trim();
+        
+        const productTitle = item.displayName ?? item.name ?? item.productName ?? item.title;
+        if (productTitle) product.product_title = String(productTitle).trim();
+        
+        const brand = item.brand?.name ?? item.brandName ?? item.brand;
+        if (brand) product.brand = String(brand).trim();
+        
+        // Extract pricing
+        const pricingNode = item.pricing ?? item.price;
+        if (pricingNode) {
+            const priceValue = pricingNode.price ?? pricingNode.value ?? pricingNode.current;
+            if (priceValue !== undefined && priceValue !== null) product.price = String(priceValue).trim();
+            
+            const currencyCode = pricingNode.currency ?? pricingNode.currencyCode;
+            if (currencyCode) product.currency = String(currencyCode).trim();
+        }
+
+        // Extract ratings
+        const ratingValue = item.rating ?? item.averageRating;
+        if (ratingValue !== undefined && ratingValue !== null && !Number.isNaN(Number.parseFloat(ratingValue))) {
+            product.rating = Number.parseFloat(ratingValue);
+        }
+        
+        const reviewsCount = item.numberOfReviews ?? item.reviewCount;
+        if (reviewsCount !== undefined && reviewsCount !== null && !Number.isNaN(Number.parseInt(reviewsCount, 10))) {
+            product.reviews_count = Number.parseInt(reviewsCount, 10);
+        }
+
+        results.push(product);
+    }
+
+    log.info(`Extracted ${results.length} products from Next.js pageProps.products array`);
+    return results;
 }
 
 function resolveBaseOrigin(loc) {
