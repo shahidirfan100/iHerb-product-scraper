@@ -9,17 +9,11 @@
       "type": "array",
       "description": "Multiple iHerb entry points (category, search, or product URLs). Supports objects with `url` or `requestsFromUrl` fields.",
       "editor": "requestListSources"
-    },
-    "startUrl": {
-      "title": "Start URL",
+    }, 
+    "url": { 
+      "title": "Start URL (if not using Keyword/Category)",
       "type": "string",
-      "description": "Start scraping from a specific iHerb URL (e.g., category or search page). If provided, this will be used instead of Keyword/Category.",
-      "editor": "textfield"
-    },
-    "url": {
-      "title": "Single URL",
-      "type": "string",
-      "description": "Alternative single iHerb URL to start from (e.g., product or category). Overrides keyword/category if provided.",
+      "description": "Single iHerb entry point (category, search, or product URL).",
       "editor": "textfield"
     },
     "keyword": {
@@ -70,24 +64,6 @@
       "minimum": 1,
       "editor": "number",
       "default": 20
-    },
-    "maxConcurrency": {
-      "title": "Max concurrency",
-      "type": "integer",
-      "description": "Maximum number of parallel HTTP requests (1-50).",
-      "minimum": 1,
-      "maximum": 50,
-      "default": 10,
-      "editor": "number"
-    },
-    "maxRequestRetries": {
-      "title": "Max request retries",
-      "type": "integer",
-      "description": "How many times to retry a failed request before giving up.",
-      "minimum": 0,
-      "maximum": 10,
-      "default": 3,
-      "editor": "number"
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",

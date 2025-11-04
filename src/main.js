@@ -3,7 +3,7 @@ import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
 import { gotScraping } from 'got-scraping';
 import { load as cheerioLoad } from 'cheerio';
-import HeaderGenerator from 'header-generator';
+import { HeaderGenerator } from 'header-generator';
 
 const DEFAULT_IHERB_ORIGIN = 'https://www.iherb.com';
 
