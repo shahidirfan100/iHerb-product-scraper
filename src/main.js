@@ -1,7 +1,6 @@
 import { Actor, log } from 'apify';
 import { Dataset, PlaywrightCrawler } from 'crawlee';
 import { Session } from '@crawlee/core';
-import { firefox } from 'playwright';
 
 /**
  * ANTI-CLOUDFLARE CONFIGURATION GUIDE
@@ -23,7 +22,7 @@ import { firefox } from 'playwright';
  *    - If still blocked: increase to 5-10 seconds
  * 
  * 4. **Browser Configuration**
- *    - Firefox is less detected than Chrome
+ *    - Uses headless Chromium shipped with the Apify base image
  *    - Enhanced stealth scripts applied automatically
  *    - Realistic fingerprints via Crawlee
  * 
@@ -255,7 +254,7 @@ for (const req of initialRequests) {
 
 log.info('========================================');
 log.info(`Seeded ${initialRequests.length} initial request${initialRequests.length === 1 ? '' : 's'}`);
-log.info(`Configuration: maxConcurrency=${maxConcurrency}, maxRetries=10, browser=Firefox, resultsWanted=${resultsWanted}`);
+log.info(`Configuration: maxConcurrency=${maxConcurrency}, maxRetries=10, browser=Chromium, resultsWanted=${resultsWanted}`);
 log.info(`Wait strategy: load (Cloudflare-friendly), delays: 2-5s per request`);
 log.info(`Anti-bot measures: Session rotation, enhanced stealth, human-like behavior, random delays`);
 log.info(`Proxies: ${proxyConfiguration ? 'ENABLED' : 'DISABLED (will likely be blocked!)'}`);
@@ -323,7 +322,7 @@ const applyStealthScripts = async (page) => {
             configurable: true
         });
 
-        // Chrome object for Firefox
+        // Ensure window.chrome exists (common bot detection check)
         window.chrome = {
             runtime: {},
             loadTimes: function() {},
@@ -602,14 +601,13 @@ crawler = new PlaywrightCrawler({
         fingerprintOptions: {
             fingerprintGeneratorOptions: {
                 devices: ['desktop'],
-                browsers: ['firefox'],
+                browsers: ['chrome'],
                 operatingSystems: ['windows'],
                 locales: language ? [language] : undefined,
             },
         },
     },
     launchContext: {
-        launcher: firefox,
         launchOptions: {
             headless: true,
             args: [
@@ -660,7 +658,7 @@ crawler = new PlaywrightCrawler({
             const fingerprint = browserController?.fingerprint;
             const userAgent = fingerprint?.navigator?.userAgent;
 
-            // Firefox-specific headers (NOT Chrome!)
+            // Desktop browser headers (works for Chromium headless)
             const headers = {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
                 'Accept-Language': language || 'en-US,en;q=0.5',
