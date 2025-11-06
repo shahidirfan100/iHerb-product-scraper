@@ -1,10 +1,11 @@
 {
-  "keyword": "vitamin c",
+  "keyword": "oil",
   "category": "",
   "results_wanted": 10,
   "max_pages": 2,
   "collectDetails": false,
   "proxyConfiguration": {
-    "useApifyProxy": false
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
   }
 }

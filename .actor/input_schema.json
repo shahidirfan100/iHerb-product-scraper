@@ -68,11 +68,11 @@
     "maxConcurrency": {
       "title": "Max concurrency",
       "type": "integer",
-      "description": "Maximum number of pages to process concurrently. Lower is stealthier (recommended: 2-3).",
+      "description": "Maximum number of pages to process concurrently. Lower is stealthier (recommended: 1-2 for iHerb).",
       "minimum": 1,
       "maximum": 10,
       "editor": "number",
-      "default": 3
+      "default": 1
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",

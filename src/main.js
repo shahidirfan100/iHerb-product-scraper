@@ -2,6 +2,41 @@ import { Actor, log } from 'apify';
 import { Dataset, PlaywrightCrawler } from 'crawlee';
 
 /**
+ * ANTI-CLOUDFLARE CONFIGURATION GUIDE
+ * ====================================
+ * 
+ * iHerb uses Cloudflare protection. If you see "Bot challenge detected":
+ * 
+ * 1. **ENABLE PROXIES** (MOST IMPORTANT!)
+ *    - Set proxyConfiguration.useApifyProxy = true
+ *    - Use RESIDENTIAL proxies (best for Cloudflare)
+ *    - Datacenter proxies may work but have higher block rate
+ * 
+ * 2. **Use Low Concurrency**
+ *    - maxConcurrency = 1 (safest)
+ *    - maxConcurrency = 2-3 (if you have good proxies)
+ * 
+ * 3. **Increase Delays**
+ *    - Default: 2-5 seconds between requests
+ *    - If still blocked: increase to 5-10 seconds
+ * 
+ * 4. **Browser Configuration**
+ *    - Firefox is less detected than Chrome
+ *    - Enhanced stealth scripts applied automatically
+ *    - Realistic fingerprints via Crawlee
+ * 
+ * 5. **Wait Strategy**
+ *    - Using 'load' instead of 'networkidle' for faster response
+ *    - 2-second wait after navigation for challenge detection
+ * 
+ * Expected behavior:
+ * - First few requests may be challenged
+ * - Session pool will rotate bad sessions
+ * - Success rate should be >50% with good proxies
+ * - Without proxies: 0-10% success rate (not recommended)
+ */
+
+/**
  * Normalise origin/location input into a usable base URL.
  */
 const normaliseOrigin = (location) => {
@@ -112,11 +147,21 @@ const resultsWanted =
         ? 100
         : asPositiveInteger(resultsWantedInput, Number.POSITIVE_INFINITY);
 const maxPages = asPositiveInteger(maxPagesInput, 20);
-const maxConcurrency = asPositiveInteger(maxConcurrencyInput, 3);
+const maxConcurrency = asPositiveInteger(maxConcurrencyInput, 1);
 
 log.info('Using origin:', { baseOrigin });
 
 const proxyConfiguration = await Actor.createProxyConfiguration(proxyInput);
+
+// CRITICAL: Validate proxy configuration
+if (!proxyConfiguration || !proxyInput?.useApifyProxy) {
+    log.warning('⚠️  WARNING: No proxies configured! iHerb WILL block you without proxies.');
+    log.warning('⚠️  For production use, enable Apify Proxy (RESIDENTIAL recommended)');
+    log.warning('⚠️  Set proxyConfiguration.useApifyProxy = true in input');
+} else {
+    log.info('✓ Proxy configuration enabled:', proxyInput);
+}
+
 const requestQueue = await Actor.openRequestQueue();
 
 const initialRequests = [];
@@ -209,7 +254,9 @@ for (const req of initialRequests) {
 log.info(`\n========================================`);
 log.info(`✓ Seeded ${initialRequests.length} initial request${initialRequests.length === 1 ? '' : 's'}`);
 log.info(`Configuration: maxConcurrency=${maxConcurrency}, maxRetries=10, browser=Firefox, resultsWanted=${resultsWanted}`);
-log.info(`Anti-bot measures: Session rotation, stealth scripts, human-like behavior, random delays enabled`);
+log.info(`Wait strategy: load (Cloudflare-friendly), delays: 2-5s per request`);
+log.info(`Anti-bot measures: Session rotation, enhanced stealth, human-like behavior, random delays`);
+log.info(`Proxies: ${proxyConfiguration ? 'ENABLED ✓' : 'DISABLED ⚠️ (will likely be blocked!)'}`);
 log.info(`========================================\n`);
 
 const cookiesForContext = parseCookies(rawCookies, cookiesJson, baseOrigin);
@@ -267,11 +314,20 @@ const applyStealthScripts = async (page) => {
     if (page.context().__stealthApplied) return;
     page.context().__stealthApplied = true;
     await page.addInitScript(() => {
-        // Hide webdriver flag.
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        // Hide webdriver flag - CRITICAL for Cloudflare
+        delete Object.getPrototypeOf(navigator).webdriver;
+        Object.defineProperty(navigator, 'webdriver', { 
+            get: () => false,
+            configurable: true
+        });
 
-        // Provide fake chrome object.
-        window.chrome ??= { runtime: {} };
+        // Chrome object for Firefox
+        window.chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {}
+        };
 
         // Pretend to have plugins and languages.
         Object.defineProperty(navigator, 'plugins', {
@@ -301,11 +357,11 @@ const applyStealthScripts = async (page) => {
             }),
         });
 
-        // Patch permissions query to avoid notification warnings.
-        const originalQuery = navigator.permissions?.query;
+        // Fix permissions
+        const originalQuery = window.navigator.permissions?.query;
         if (originalQuery) {
-            navigator.permissions.query = (parameters) =>
-                parameters?.name === 'notifications'
+            window.navigator.permissions.__proto__.query = parameters =>
+                parameters.name === 'notifications'
                     ? Promise.resolve({ state: Notification.permission })
                     : originalQuery(parameters);
         }
@@ -359,14 +415,35 @@ const applyStealthScripts = async (page) => {
             },
         });
 
-        // Override toString to hide proxy
-        const originalToString = Function.prototype.toString;
+        // Fix toString
+        const oldCall = Function.prototype.call;
+        function call() {
+            return oldCall.apply(this, arguments);
+        }
+        Function.prototype.call = call;
+
+        const nativeToStringFunctionString = Error.toString().replace(/Error/g, 'toString');
+        const oldToString = Function.prototype.toString;
+
         Function.prototype.toString = function() {
-            if (this === navigator.permissions.query) {
+            if (this === window.navigator.permissions.query) {
                 return 'function query() { [native code] }';
             }
-            return originalToString.call(this);
+            if (this === Function.prototype.toString) {
+                return nativeToStringFunctionString;
+            }
+            return oldCall.call(oldToString, this);
         };
+
+        // Prevent notification prompts
+        window.Notification = new Proxy(window.Notification, {
+            get(target, prop) {
+                if (prop === 'permission') {
+                    return 'denied';
+                }
+                return Reflect.get(...arguments);
+            },
+        });
     });
 };
 
@@ -499,11 +576,19 @@ crawler = new PlaywrightCrawler({
     navigationTimeoutSecs: 60,
     useSessionPool: true,
     sessionPoolOptions: {
-        maxPoolSize: 50,
+        maxPoolSize: 100,
         sessionOptions: {
-            maxUsageCount: 25,
-            maxErrorScore: 1,
-            maxAgeSecs: 600,
+            maxUsageCount: 20,
+            maxErrorScore: 0.5,
+            maxAgeSecs: 900,
+        },
+        createSessionFunction: (sessionPool) => {
+            const session = new sessionPool.SessionPoolOptions.SessionConstructor({ sessionPool });
+            session.userData = {
+                createdAt: Date.now(),
+                requestCount: 0,
+            };
+            return session;
         },
     },
     browserPoolOptions: {
@@ -523,6 +608,19 @@ crawler = new PlaywrightCrawler({
             args: [
                 '--disable-dev-shm-usage',
                 '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--allow-running-insecure-content',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-ipc-flooding-protection',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-background-timer-throttling',
+                '--window-size=1920,1080',
             ],
         },
     },
@@ -533,7 +631,7 @@ crawler = new PlaywrightCrawler({
             const originalGoto = ctx.gotoOptions ?? {};
             ctx.gotoOptions = {
                 ...originalGoto,
-                waitUntil: originalGoto.waitUntil ?? 'networkidle',
+                waitUntil: originalGoto.waitUntil ?? 'load',
                 timeout: originalGoto.timeout ?? 60000,
             };
 
@@ -551,21 +649,23 @@ crawler = new PlaywrightCrawler({
             const fingerprint = browserController?.fingerprint;
             const userAgent = fingerprint?.navigator?.userAgent;
 
+            // Firefox-specific headers (NOT Chrome!)
             const headers = {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
                 'Accept-Encoding': 'gzip, deflate, br',
-                'Accept-Language': language || 'en-US,en;q=0.9',
+                'Accept-Language': language || 'en-US,en;q=0.5',
                 'DNT': '1',
                 'Upgrade-Insecure-Requests': '1',
                 'Sec-Fetch-Dest': 'document',
                 'Sec-Fetch-Mode': 'navigate',
                 'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
+                'TE': 'trailers', // Firefox specific
             };
 
             // Add referrer if coming from another page in the same session
             if (session?.userData?.lastUrl && request.userData?.label === 'PRODUCT') {
                 headers['Referer'] = session.userData.lastUrl;
+                headers['Sec-Fetch-Site'] = 'same-origin';
             }
 
             await page.setExtraHTTPHeaders(headers);
@@ -602,21 +702,36 @@ crawler = new PlaywrightCrawler({
     ],
     postNavigationHooks: [
         async ({ page, session, response }) => {
-            if (response) {
-                const status = response.status();
-                if (status === 403 || status === 429 || status === 503) {
-                    log.warning(`Received status ${status}, retiring session.`);
-                    session?.markBad?.();
-                    if (session) session.retire();
-                    throw new Error(`HTTP ${status} - Request blocked or rate limited`);
-                }
-            }
-
-            if (await looksLikeChallengePage(page)) {
-                log.warning('Bot challenge detected, retiring session.');
+            // First check if we even got a response
+            if (!response) {
+                log.warning('No response received, possible navigation failure');
                 session?.markBad?.();
                 if (session) session.retire();
-                throw new Error('Encountered bot challenge / Cloudflare gate');
+                throw new Error('Navigation failed - no response');
+            }
+
+            const status = response.status();
+            log.info(`Response status: ${status}`);
+
+            // Check for blocking status codes FIRST
+            if (status === 403 || status === 429 || status === 503) {
+                log.warning(`Received status ${status}, retiring session.`);
+                session?.markBad?.();
+                if (session) session.retire();
+                throw new Error(`HTTP ${status} - Request blocked or rate limited`);
+            }
+
+            // Only check for challenge page if we got a 200 response
+            if (status >= 200 && status < 300) {
+                // Wait a bit for page to render
+                await page.waitForTimeout(2000);
+                
+                if (await looksLikeChallengePage(page)) {
+                    log.warning('Bot challenge detected on successful response, retiring session.');
+                    session?.markBad?.();
+                    if (session) session.retire();
+                    throw new Error('Encountered bot challenge / Cloudflare gate');
+                }
             }
         },
     ],
@@ -624,8 +739,10 @@ crawler = new PlaywrightCrawler({
         const { label } = request.userData;
         crawlerLog.info(`Processing ${label ?? 'UNKNOWN'}: ${request.url}`);
 
-        // Random delay to appear more human-like
-        await page.waitForTimeout(1000 + Math.random() * 2000);
+        // Random delay to appear more human-like (increased for Cloudflare)
+        const delay = 2000 + Math.random() * 3000;
+        crawlerLog.info(`Waiting ${Math.round(delay)}ms before processing (anti-bot timing)...`);
+        await page.waitForTimeout(delay);
 
         // Simulate human-like scrolling behavior
         await page.evaluate(async () => {
