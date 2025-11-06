@@ -13,7 +13,11 @@ const normaliseOrigin = (location) => {
     if (cleaned.includes('.')) {
         return `https://${cleaned}`;
     }
-    return `https://${cleaned}.iherb.com`;
+    // Handle country codes like 'pk', 'au', 'ru', etc.
+    if (cleaned.match(/^[a-z]{2}$/i)) {
+        return `https://${cleaned}.iherb.com`;
+    }
+    return `https://www.iherb.com`;
 };
 
 const buildProductUrl = (origin, slug, partNumber) => {
@@ -108,7 +112,7 @@ const resultsWanted =
         ? 100
         : asPositiveInteger(resultsWantedInput, Number.POSITIVE_INFINITY);
 const maxPages = asPositiveInteger(maxPagesInput, 20);
-const maxConcurrency = asPositiveInteger(maxConcurrencyInput, 8);
+const maxConcurrency = asPositiveInteger(maxConcurrencyInput, 3);
 
 log.info('Using origin:', { baseOrigin });
 
@@ -182,12 +186,14 @@ if (!initialRequests.length && singleUrl) {
 
 if (!initialRequests.length && keyword) {
     const searchUrl = `${baseOrigin}/search?kw=${encodeURIComponent(keyword)}`;
+    log.info(`Creating search URL for keyword "${keyword}": ${searchUrl}`);
     enqueueInitialListing(searchUrl);
 }
 
 if (!initialRequests.length && category) {
     const categorySlug = category.replace(/^\//, '');
     const categoryUrl = `${baseOrigin}/c/${categorySlug}`;
+    log.info(`Creating category URL for "${category}": ${categoryUrl}`);
     enqueueInitialListing(categoryUrl);
 }
 
@@ -197,9 +203,14 @@ if (!initialRequests.length) {
 
 for (const req of initialRequests) {
     await requestQueue.addRequest(req);
+    log.info(`→ Enqueued ${req.userData.label || 'UNKNOWN'}: ${req.url}`);
 }
 
-log.info(`Seeded ${initialRequests.length} initial request${initialRequests.length === 1 ? '' : 's'}.`);
+log.info(`\n========================================`);
+log.info(`✓ Seeded ${initialRequests.length} initial request${initialRequests.length === 1 ? '' : 's'}`);
+log.info(`Configuration: maxConcurrency=${maxConcurrency}, maxRetries=10, browser=Firefox, resultsWanted=${resultsWanted}`);
+log.info(`Anti-bot measures: Session rotation, stealth scripts, human-like behavior, random delays enabled`);
+log.info(`========================================\n`);
 
 const cookiesForContext = parseCookies(rawCookies, cookiesJson, baseOrigin);
 
@@ -232,10 +243,24 @@ const extractNextData = async (page) => {
 
 const looksLikeChallengePage = async (page) => {
     const title = (await page.title()).toLowerCase();
-    if (title.includes('just a moment') || title.includes('please wait')) return true;
+    if (title.includes('just a moment') || title.includes('please wait') || title.includes('access denied') || title.includes('attention required')) return true;
 
-    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 4000)?.toLowerCase() ?? '');
-    return bodyText.includes('cf-chl') || bodyText.includes('cloudflare') || bodyText.includes('bot detection');
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 5000)?.toLowerCase() ?? '');
+    if (bodyText.includes('cf-chl') || bodyText.includes('cloudflare') || bodyText.includes('bot detection') || 
+        bodyText.includes('captcha') || bodyText.includes('rate limit') || bodyText.includes('too many requests')) {
+        return true;
+    }
+
+    try {
+        const response = page.mainFrame().page().context().pages()[0]?.url();
+        if (response && response !== page.url() && !response.includes('iherb.com')) {
+            return true;
+        }
+    } catch {
+        // Ignore redirect check errors
+    }
+
+    return false;
 };
 
 const applyStealthScripts = async (page) => {
@@ -250,10 +275,30 @@ const applyStealthScripts = async (page) => {
 
         // Pretend to have plugins and languages.
         Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4],
+            get: () => [1, 2, 3, 4, 5],
         });
         Object.defineProperty(navigator, 'languages', {
             get: () => ['en-US', 'en'],
+        });
+
+        // Add realistic hardware concurrency
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            get: () => 8,
+        });
+
+        // Add realistic device memory
+        Object.defineProperty(navigator, 'deviceMemory', {
+            get: () => 8,
+        });
+
+        // Add realistic connection info
+        Object.defineProperty(navigator, 'connection', {
+            get: () => ({
+                effectiveType: '4g',
+                downlink: 10,
+                rtt: 50,
+                saveData: false,
+            }),
         });
 
         // Patch permissions query to avoid notification warnings.
@@ -273,12 +318,55 @@ const applyStealthScripts = async (page) => {
             return getParameter.call(this, param);
         };
 
+        // WebGL2 support
+        if (typeof WebGL2RenderingContext !== 'undefined') {
+            const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function patched(param) {
+                if (param === 37445) return 'Intel Inc.';
+                if (param === 37446) return 'Intel Iris OpenGL Engine';
+                return getParameter2.call(this, param);
+            };
+        }
+
+        // Add realistic battery API
+        Object.defineProperty(navigator, 'getBattery', {
+            value: () => Promise.resolve({
+                charging: true,
+                chargingTime: 0,
+                dischargingTime: Infinity,
+                level: 1,
+                addEventListener: () => {},
+                removeEventListener: () => {},
+            }),
+        });
+
+        // Media devices
+        if (navigator.mediaDevices) {
+            const originalEnumerateDevices = navigator.mediaDevices.enumerateDevices;
+            navigator.mediaDevices.enumerateDevices = async function() {
+                return [
+                    { kind: 'audioinput', deviceId: 'default', label: '', groupId: '' },
+                    { kind: 'videoinput', deviceId: 'default', label: '', groupId: '' },
+                    { kind: 'audiooutput', deviceId: 'default', label: '', groupId: '' },
+                ];
+            };
+        }
+
         // Remove broken iframe contentWindow.
         Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
             get() {
                 return window;
             },
         });
+
+        // Override toString to hide proxy
+        const originalToString = Function.prototype.toString;
+        Function.prototype.toString = function() {
+            if (this === navigator.permissions.query) {
+                return 'function query() { [native code] }';
+            }
+            return originalToString.call(this);
+        };
     });
 };
 
@@ -336,12 +424,23 @@ const enqueueNextListingPage = async ({ request, pageProps, crawler: crawlerInst
     const totalPages =
         Number(pagination.totalPages ?? pagination.pageCount ?? pagination.total ?? pagination.lastPage ?? 1);
 
-    if (currentPage >= totalPages) return;
+    log.info(`Pagination: Current=${currentPage}, Total=${totalPages}, Max allowed=${maxPages}`);
+
+    if (currentPage >= totalPages) {
+        log.info(`Reached last page (${currentPage}/${totalPages})`);
+        return;
+    }
 
     const nextPage = currentPage + 1;
-    if (nextPage > maxPages) return;
+    if (nextPage > maxPages) {
+        log.info(`Reached max pages limit (${maxPages})`);
+        return;
+    }
 
-    if (shouldStop()) return;
+    if (shouldStop()) {
+        log.info(`Result limit reached, skipping pagination`);
+        return;
+    }
 
     let nextUrl = pagination?.nextPageUrl ?? pagination?.nextPage ?? null;
     if (nextUrl) {
@@ -365,12 +464,22 @@ const enqueueNextListingPage = async ({ request, pageProps, crawler: crawlerInst
         }
     }
 
-    if (!nextUrl || stat.enqueued.has(nextUrl)) return;
+    // Validate nextUrl is different from current URL
+    if (nextUrl === request.url) {
+        log.warning(`Next page URL is same as current URL, skipping to prevent loop`);
+        return;
+    }
+
+    if (!nextUrl || stat.enqueued.has(nextUrl)) {
+        log.info(`Pagination URL already enqueued or invalid, skipping`);
+        return;
+    }
 
     stat.enqueued.add(nextUrl);
     stat.maxQueued = Math.max(stat.maxQueued, nextPage);
     listingStats.set(listingKey, stat);
 
+    log.info(`→ Enqueueing page ${nextPage}: ${nextUrl}`);
     await crawlerInstance.addRequests([{
         url: nextUrl,
         userData: {
@@ -385,13 +494,16 @@ crawler = new PlaywrightCrawler({
     requestQueue,
     proxyConfiguration,
     maxConcurrency,
-    requestHandlerTimeoutSecs: 75,
-    navigationTimeoutSecs: 35,
+    maxRequestRetries: 10,
+    requestHandlerTimeoutSecs: 90,
+    navigationTimeoutSecs: 60,
     useSessionPool: true,
     sessionPoolOptions: {
+        maxPoolSize: 50,
         sessionOptions: {
-            maxUsageCount: 15,
-            maxAgeSecs: 300,
+            maxUsageCount: 25,
+            maxErrorScore: 1,
+            maxAgeSecs: 600,
         },
     },
     browserPoolOptions: {
@@ -399,7 +511,7 @@ crawler = new PlaywrightCrawler({
         fingerprintOptions: {
             fingerprintGeneratorOptions: {
                 devices: ['desktop'],
-                browsers: ['chrome', 'edge'],
+                browsers: ['firefox'],
                 operatingSystems: ['windows'],
                 locales: language ? [language] : undefined,
             },
@@ -416,19 +528,19 @@ crawler = new PlaywrightCrawler({
     },
     preNavigationHooks: [
         async (ctx) => {
-            const { page, session, browserController } = ctx;
+            const { page, session, browserController, request } = ctx;
 
             const originalGoto = ctx.gotoOptions ?? {};
             ctx.gotoOptions = {
                 ...originalGoto,
-                waitUntil: originalGoto.waitUntil ?? 'domcontentloaded',
+                waitUntil: originalGoto.waitUntil ?? 'networkidle',
                 timeout: originalGoto.timeout ?? 60000,
             };
 
             if (!page.__blockResourcesApplied) {
                 await page.route('**/*', (route) => {
                     const type = route.request().resourceType();
-                    if (['image', 'media'].includes(type)) {
+                    if (['image', 'media', 'font'].includes(type)) {
                         return route.abort();
                     }
                     return route.continue();
@@ -436,11 +548,27 @@ crawler = new PlaywrightCrawler({
                 page.__blockResourcesApplied = true;
             }
 
-            if (language) {
-                await page.setExtraHTTPHeaders({
-                    'Accept-Language': language,
-                });
+            const fingerprint = browserController?.fingerprint;
+            const userAgent = fingerprint?.navigator?.userAgent;
+
+            const headers = {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept-Language': language || 'en-US,en;q=0.9',
+                'DNT': '1',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+            };
+
+            // Add referrer if coming from another page in the same session
+            if (session?.userData?.lastUrl && request.userData?.label === 'PRODUCT') {
+                headers['Referer'] = session.userData.lastUrl;
             }
+
+            await page.setExtraHTTPHeaders(headers);
 
             if (cookiesForContext.length && !page.context().__cookiesApplied) {
                 try {
@@ -453,26 +581,37 @@ crawler = new PlaywrightCrawler({
 
             await applyStealthScripts(page);
 
-            const fingerprint = browserController?.fingerprint;
             if (fingerprint) {
                 const { screen, navigator: nav } = fingerprint;
                 if (screen?.width && screen?.height) {
+                    const viewportWidth = Math.floor(screen.width + (Math.random() * 100 - 50));
+                    const viewportHeight = Math.floor(screen.height + (Math.random() * 100 - 50));
                     await page.setViewportSize({
-                        width: screen.width,
-                        height: screen.height,
+                        width: Math.max(1024, Math.min(viewportWidth, 1920)),
+                        height: Math.max(768, Math.min(viewportHeight, 1080)),
                     });
                 }
-                const ua = nav?.userAgent;
+                const ua = nav?.userAgent || userAgent;
                 if (ua) await page.setUserAgent(ua);
             }
 
             if (session?.userData) {
-                session.userData.lastUrl = page.url();
+                session.userData.lastUrl = request.url;
             }
         },
     ],
     postNavigationHooks: [
-        async ({ page, session }) => {
+        async ({ page, session, response }) => {
+            if (response) {
+                const status = response.status();
+                if (status === 403 || status === 429 || status === 503) {
+                    log.warning(`Received status ${status}, retiring session.`);
+                    session?.markBad?.();
+                    if (session) session.retire();
+                    throw new Error(`HTTP ${status} - Request blocked or rate limited`);
+                }
+            }
+
             if (await looksLikeChallengePage(page)) {
                 log.warning('Bot challenge detected, retiring session.');
                 session?.markBad?.();
@@ -481,23 +620,63 @@ crawler = new PlaywrightCrawler({
             }
         },
     ],
-    async requestHandler({ page, request, log: crawlerLog, crawler: crawlerInstance }) {
+    async requestHandler({ page, request, log: crawlerLog, crawler: crawlerInstance, session }) {
         const { label } = request.userData;
         crawlerLog.info(`Processing ${label ?? 'UNKNOWN'}: ${request.url}`);
 
+        // Random delay to appear more human-like
+        await page.waitForTimeout(1000 + Math.random() * 2000);
+
+        // Simulate human-like scrolling behavior
+        await page.evaluate(async () => {
+            const scrollHeight = document.documentElement.scrollHeight;
+            const viewportHeight = window.innerHeight;
+            const scrollSteps = Math.floor(scrollHeight / viewportHeight);
+            
+            for (let i = 0; i < Math.min(scrollSteps, 3); i++) {
+                window.scrollBy(0, viewportHeight * 0.6);
+                await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 400));
+            }
+            
+            // Scroll back to top
+            window.scrollTo(0, 0);
+        });
+
+        crawlerLog.info(`Extracting __NEXT_DATA__ from page...`);
         let nextData = null;
         for (let attempt = 0; attempt < 3; attempt++) {
             await page.waitForFunction(
                 () => typeof window !== 'undefined' && !!window.__NEXT_DATA__?.props?.pageProps,
-                { timeout: 20000 }
-            ).catch(() => {});
+                { timeout: 30000 }
+            ).catch(() => crawlerLog.warning(`Attempt ${attempt + 1}/3: __NEXT_DATA__ wait timed out`));
+            
             nextData = await extractNextData(page);
-            if (nextData?.props?.pageProps) break;
-            await page.waitForTimeout(1500);
+            if (nextData?.props?.pageProps) {
+                crawlerLog.info(`✓ __NEXT_DATA__ extracted successfully on attempt ${attempt + 1}`);
+                break;
+            }
+            crawlerLog.warning(`Attempt ${attempt + 1}/3: No valid __NEXT_DATA__ found, retrying...`);
+            await page.waitForTimeout(2000 + Math.random() * 1000);
         }
 
         if (!nextData?.props?.pageProps) {
-            crawlerLog.warning('No Next.js payload found, skipping.');
+            crawlerLog.error('Failed to extract __NEXT_DATA__ after 3 attempts');
+            
+            // Log page details for debugging
+            const pageUrl = page.url();
+            const pageTitle = await page.title();
+            crawlerLog.info(`Page URL: ${pageUrl}, Title: "${pageTitle}"`);
+            
+            // Check if __NEXT_DATA__ script tag exists
+            const hasNextDataScript = await page.evaluate(() => {
+                const script = document.querySelector('script#__NEXT_DATA__');
+                if (script) {
+                    return { exists: true, length: script.textContent?.length || 0 };
+                }
+                return { exists: false, length: 0 };
+            });
+            crawlerLog.info(`__NEXT_DATA__ script tag: ${JSON.stringify(hasNextDataScript)}`);
+            
             session?.markBad?.();
             return;
         }
@@ -507,20 +686,62 @@ crawler = new PlaywrightCrawler({
 
         const collectFromPageProps = (props) => {
             const pools = [];
-            if (Array.isArray(props.products)) pools.push(props.products);
-            if (Array.isArray(props.productSummaries)) pools.push(props.productSummaries);
+            const poolNames = [];
+            
+            if (Array.isArray(props.products)) { 
+                pools.push(props.products); 
+                poolNames.push(`products[${props.products.length}]`);
+            }
+            if (Array.isArray(props.productSummaries)) { 
+                pools.push(props.productSummaries);
+                poolNames.push(`productSummaries[${props.productSummaries.length}]`);
+            }
             if (props.productGrid) {
                 const grid = props.productGrid;
-                if (Array.isArray(grid.products)) pools.push(grid.products);
-                if (Array.isArray(grid.items)) pools.push(grid.items);
-                if (Array.isArray(grid.productSummaries)) pools.push(grid.productSummaries);
-                if (Array.isArray(grid.results)) pools.push(grid.results);
+                if (Array.isArray(grid.products)) {
+                    pools.push(grid.products);
+                    poolNames.push(`productGrid.products[${grid.products.length}]`);
+                }
+                if (Array.isArray(grid.items)) {
+                    pools.push(grid.items);
+                    poolNames.push(`productGrid.items[${grid.items.length}]`);
+                }
+                if (Array.isArray(grid.productSummaries)) {
+                    pools.push(grid.productSummaries);
+                    poolNames.push(`productGrid.productSummaries[${grid.productSummaries.length}]`);
+                }
+                if (Array.isArray(grid.results)) {
+                    pools.push(grid.results);
+                    poolNames.push(`productGrid.results[${grid.results.length}]`);
+                }
             }
-            if (props.category?.products) pools.push(props.category.products);
-            if (props.category?.productList?.items) pools.push(props.category.productList.items);
-            if (props.results?.items) pools.push(props.results.items);
-            if (props.searchResults?.products) pools.push(props.searchResults.products);
-            if (props.searchResults?.items) pools.push(props.searchResults.items);
+            if (props.category?.products) {
+                pools.push(props.category.products);
+                poolNames.push(`category.products[${props.category.products.length}]`);
+            }
+            if (props.category?.productList?.items) {
+                pools.push(props.category.productList.items);
+                poolNames.push(`category.productList.items[${props.category.productList.items.length}]`);
+            }
+            if (props.results?.items) {
+                pools.push(props.results.items);
+                poolNames.push(`results.items[${props.results.items.length}]`);
+            }
+            if (props.searchResults?.products) {
+                pools.push(props.searchResults.products);
+                poolNames.push(`searchResults.products[${props.searchResults.products.length}]`);
+            }
+            if (props.searchResults?.items) {
+                pools.push(props.searchResults.items);
+                poolNames.push(`searchResults.items[${props.searchResults.items.length}]`);
+            }
+
+            if (poolNames.length > 0) {
+                crawlerLog.info(`Found product data in: ${poolNames.join(', ')}`);
+            } else {
+                crawlerLog.warning('No product arrays found in pageProps');
+                crawlerLog.info(`Available pageProps keys: ${Object.keys(props).join(', ')}`);
+            }
 
             const merged = [];
             for (const arr of pools) {
@@ -551,28 +772,34 @@ crawler = new PlaywrightCrawler({
             if (dedupe && productId) productSeenSet.add(productId);
 
             await pushProductDatasetItem(request.url, product);
-            crawlerLog.info(`Saved product ${savedCount}${Number.isFinite(resultsWanted) ? `/${resultsWanted}` : ''}`);
+            crawlerLog.info(`✓ Saved product ${savedCount}${Number.isFinite(resultsWanted) ? `/${resultsWanted}` : ''} - ${product.displayName || 'Unknown'}`);
             await stopIfNeeded();
             return;
         } else {
+            // LISTING PAGE
             let productsToHandle = listingProducts;
 
             if (!productsToHandle.length) {
+                crawlerLog.warning('No products found in __NEXT_DATA__, trying DOM fallback...');
+                
                 const domResults = await page.evaluate(() => {
                     const items = [];
                     const seen = new Set();
                     const anchors = Array.from(document.querySelectorAll('a[href*="/pr/"]'));
+                    
+                    console.log(`Found ${anchors.length} product links in DOM`);
+                    
                     for (const anchor of anchors) {
                         const href = anchor.href;
                         if (!href || seen.has(href)) continue;
                         seen.add(href);
                         const titleNode =
-                            anchor.querySelector('h1, h2, h3, [data-element="product-title"], [data-testid="product-card-title"]') ??
+                            anchor.querySelector('h1, h2, h3, [data-element="product-title"], [data-testid="product-card-title"], .product-title') ??
                             anchor;
                         const title = titleNode.textContent?.trim();
-                        if (!title) continue;
+                        if (!title || title.length < 3) continue;
                         const priceNode =
-                            anchor.querySelector('[data-element="product-price"], [data-testid="product-card-price"]') ??
+                            anchor.querySelector('[data-element="product-price"], [data-testid="product-card-price"], .product-price, .price') ??
                             anchor.closest('[data-element="product-card"]')?.querySelector('[data-element="product-price"]');
                         const priceText = priceNode?.textContent?.trim() ?? null;
                         const priceTextNormalized = priceText?.replace(/\s+/g, ' ') ?? null;
@@ -586,11 +813,13 @@ crawler = new PlaywrightCrawler({
                             slug: slugMatch ? slugMatch[1] : undefined,
                         });
                     }
+                    
+                    console.log(`Extracted ${items.length} valid products from DOM`);
                     return items;
                 });
 
                 if (domResults.length) {
-                    crawlerLog.info(`Falling back to DOM extraction, found ${domResults.length} product anchors.`);
+                    crawlerLog.info(`✓ DOM fallback successful: found ${domResults.length} product links`);
                     productsToHandle = domResults.map((item) => ({
                         partNumber: item.partNumber,
                         slug: item.slug ?? '',
@@ -620,7 +849,12 @@ crawler = new PlaywrightCrawler({
             const newProductRequests = [];
 
             for (const item of productsToHandle) {
-                if (shouldStop()) break;
+                // Check limit BEFORE processing to prevent overshooting
+                if (shouldStop()) {
+                    crawlerLog.info(`Result limit reached (${savedCount}/${resultsWanted}), stopping product collection.`);
+                    break;
+                }
+                
                 const productId = item.partNumber || item.id;
                 const productUrl = buildProductUrl(baseOrigin, item.slug, productId);
                 if (!productUrl && item.href) {
@@ -654,11 +888,12 @@ crawler = new PlaywrightCrawler({
                     });
                 } else {
                     await pushListingDatasetItem(baseOrigin, item);
-                    crawlerLog.info(`Saved product ${savedCount}${Number.isFinite(resultsWanted) ? `/${resultsWanted}` : ''}`);
+                    crawlerLog.info(`✓ Saved product ${savedCount}${Number.isFinite(resultsWanted) ? `/${resultsWanted}` : ''} - ${item.displayName || 'Unknown'}`);
                 }
             }
 
             if (collectDetails && newProductRequests.length) {
+                crawlerLog.info(`Enqueueing ${newProductRequests.length} product detail pages`);
                 await crawlerInstance.addRequests(newProductRequests);
             }
 
@@ -670,12 +905,22 @@ crawler = new PlaywrightCrawler({
         }
     },
     failedRequestHandler: async ({ request, error, session }) => {
-        log.error(`Request failed ${request.url}: ${error?.message}`);
+        const errorMsg = error?.message ?? '';
+        const isBlocked = errorMsg.includes('403') || errorMsg.includes('429') || errorMsg.includes('challenge');
+        
+        log.error(`Request failed ${request.url}: ${errorMsg}`);
+        
+        if (isBlocked) {
+            log.warning(`Detected blocking/challenge for ${request.url}`);
+        }
+        
         session?.markBad?.();
         session?.retire?.();
     },
 });
 
 await crawler.run();
-log.info(`Completed. Saved ${savedCount} products.`);
+log.info(`✓ Scraping completed successfully!`);
+log.info(`Total products saved: ${savedCount}`);
+log.info(`Check your dataset for the extracted product data.`);
 await Actor.exit();
