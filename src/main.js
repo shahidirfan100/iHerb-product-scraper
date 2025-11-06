@@ -1,5 +1,5 @@
 import { Actor, log } from 'apify';
-import { Dataset, PlaywrightCrawler } from 'crawlee';
+import { Dataset, PlaywrightCrawler, Session } from 'crawlee';
 
 /**
  * ANTI-CLOUDFLARE CONFIGURATION GUIDE
@@ -583,7 +583,7 @@ crawler = new PlaywrightCrawler({
             maxAgeSecs: 900,
         },
         createSessionFunction: (sessionPool) => {
-            const session = new sessionPool.SessionPoolOptions.SessionConstructor({ sessionPool });
+            const session = new Session({ sessionPool });
             session.userData = {
                 createdAt: Date.now(),
                 requestCount: 0,
