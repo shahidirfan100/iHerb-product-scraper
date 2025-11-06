@@ -311,6 +311,40 @@ const looksLikeChallengePage = async (page) => {
     return false;
 };
 
+const waitForChallengeResolution = async (page, options = {}) => {
+    const {
+        maxAttempts = 3,
+        intervalMs = 5000,
+        navigationTimeoutMs = 7000,
+    } = options;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        // If challenge already gone, succeed
+        if (!(await looksLikeChallengePage(page))) {
+            return true;
+        }
+
+        // Wait a bit to let Cloudflare JS challenge finish
+        await page.waitForTimeout(intervalMs);
+
+        // Try to catch automatic redirect / navigation
+        try {
+            await Promise.race([
+                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: navigationTimeoutMs }),
+                page.waitForLoadState('domcontentloaded', { timeout: navigationTimeoutMs }),
+            ]);
+        } catch {
+            // Ignore navigation timeout, we'll re-check the content below
+        }
+
+        if (!(await looksLikeChallengePage(page))) {
+            return true;
+        }
+    }
+
+    return !(await looksLikeChallengePage(page));
+};
+
 const applyStealthScripts = async (page) => {
     if (page.context().__stealthApplied) return;
     page.context().__stealthApplied = true;
@@ -732,17 +766,31 @@ crawler = new PlaywrightCrawler({
             if (status >= 200 && status < 300) {
                 // Wait a bit for page to render
                 await page.waitForTimeout(2000);
-                
+
                 if (await looksLikeChallengePage(page)) {
-                    log.warning('Bot challenge detected on successful response, retiring session.');
+                    log.warning('Bot challenge detected on successful response, attempting bypass.');
+                    const challengeCleared = await waitForChallengeResolution(page, {
+                        maxAttempts: 3,
+                        intervalMs: 4000,
+                        navigationTimeoutMs: 6000,
+                    });
+
+                    if (!challengeCleared) {
+                        log.warning('Bot challenge persists after waiting, retiring session.');
+                        if (session?.userData) {
+                            session.userData.challengeCount = (session.userData.challengeCount ?? 0) + 1;
+                        }
+                        session?.markBad?.();
+                        if (session && (session.userData?.challengeCount ?? 0) >= 2) {
+                            session.retire();
+                        }
+                        throw new Error('Encountered bot challenge / Cloudflare gate');
+                    }
+
+                    log.info('Cloudflare challenge passed automatically.');
                     if (session?.userData) {
-                        session.userData.challengeCount = (session.userData.challengeCount ?? 0) + 1;
+                        session.userData.challengeCount = 0;
                     }
-                    session?.markBad?.();
-                    if (session && (session.userData?.challengeCount ?? 0) >= 2) {
-                        session.retire();
-                    }
-                    throw new Error('Encountered bot challenge / Cloudflare gate');
                 }
             }
         },
