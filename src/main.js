@@ -327,6 +327,36 @@ const waitForChallengeResolution = async (page, options = {}) => {
         // Wait a bit to let Cloudflare JS challenge finish
         await page.waitForTimeout(intervalMs);
 
+        // Try to interact with possible challenge elements
+        await page.evaluate(() => {
+            const selectors = [
+                'input[type="button"][value]',
+                'button#challenge-verify-button',
+                'button[name="verify"]',
+                'button[type="submit"]',
+                'button:has(span:contains("Verify"))',
+                '#challenge-stage button',
+                'div[id*="cf-chl"] button',
+            ];
+            for (const sel of selectors) {
+                const btn = document.querySelector(sel);
+                if (btn) {
+                    btn.click();
+                }
+            }
+        }).catch(() => {});
+
+        // Perform subtle human-like mouse movement
+        try {
+            const width = await page.evaluate(() => window.innerWidth);
+            const height = await page.evaluate(() => window.innerHeight);
+            const x = Math.floor(Math.random() * Math.max(width - 20, 20));
+            const y = Math.floor(Math.random() * Math.max(height - 20, 20));
+            await page.mouse.move(x, y, { steps: 8 });
+        } catch {
+            // ignore
+        }
+
         // Try to catch automatic redirect / navigation
         try {
             await Promise.race([
@@ -345,141 +375,266 @@ const waitForChallengeResolution = async (page, options = {}) => {
     return !(await looksLikeChallengePage(page));
 };
 
-const applyStealthScripts = async (page) => {
+const applyStealthScripts = async (page, fingerprint) => {
     if (page.context().__stealthApplied) return;
     page.context().__stealthApplied = true;
-    await page.addInitScript(() => {
-        // Hide webdriver flag - CRITICAL for Cloudflare
-        delete Object.getPrototypeOf(navigator).webdriver;
-        Object.defineProperty(navigator, 'webdriver', { 
-            get: () => false,
-            configurable: true
-        });
 
-        // Ensure window.chrome exists (common bot detection check)
-        window.chrome = {
-            runtime: {},
-            loadTimes: function() {},
-            csi: function() {},
-            app: {}
+    const stealthPayload = {
+        navigatorData: fingerprint?.navigator ?? {},
+        screenData: fingerprint?.screen ?? {},
+        viewportData: fingerprint?.viewport ?? {},
+        timezone: fingerprint?.timezone ?? {},
+    };
+
+    await page.addInitScript(({ data }) => {
+        const {
+            navigatorData = {},
+            screenData = {},
+            viewportData = {},
+            timezone = {},
+        } = data ?? {};
+
+        const defineReadonly = (target, key, value) => {
+            try {
+                Object.defineProperty(target, key, {
+                    get: () => value,
+                    configurable: true,
+                });
+            } catch {
+                // ignore
+            }
         };
 
-        // Pretend to have plugins and languages.
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5],
-        });
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['en-US', 'en'],
-        });
+        const deletePropertyIfExists = (target, key) => {
+            try {
+                if (key in target) delete target[key];
+            } catch {
+                // ignore
+            }
+        };
 
-        // Add realistic hardware concurrency
-        Object.defineProperty(navigator, 'hardwareConcurrency', {
-            get: () => 8,
-        });
+        const proto = Object.getPrototypeOf(navigator);
+        if (proto && Object.getOwnPropertyDescriptor(proto, 'webdriver')) {
+            deletePropertyIfExists(proto, 'webdriver');
+        }
+        defineReadonly(navigator, 'webdriver', false);
 
-        // Add realistic device memory
-        Object.defineProperty(navigator, 'deviceMemory', {
-            get: () => 8,
+        const buildChromeObject = () => ({
+            runtime: {},
+            loadTimes: () => {},
+            csi: () => {},
+            app: {},
         });
+        defineReadonly(window, 'chrome', window.chrome ?? buildChromeObject());
 
-        // Add realistic connection info
-        Object.defineProperty(navigator, 'connection', {
-            get: () => ({
-                effectiveType: '4g',
-                downlink: 10,
-                rtt: 50,
-                saveData: false,
-            }),
-        });
+        const languages = navigatorData.languages ?? ['en-US', 'en'];
+        defineReadonly(navigator, 'languages', languages);
+        defineReadonly(navigator, 'language', languages[0]);
 
-        // Fix permissions
-        const originalQuery = window.navigator.permissions?.query;
-        if (originalQuery) {
-            window.navigator.permissions.__proto__.query = parameters =>
-                parameters.name === 'notifications'
-                    ? Promise.resolve({ state: Notification.permission })
-                    : originalQuery(parameters);
+        const platform = navigatorData.platform ?? 'Win32';
+        defineReadonly(navigator, 'platform', platform);
+
+        if (navigatorData.hardwareConcurrency) {
+            defineReadonly(navigator, 'hardwareConcurrency', navigatorData.hardwareConcurrency);
+        } else {
+            defineReadonly(navigator, 'hardwareConcurrency', 8);
+        }
+        if (navigatorData.deviceMemory) {
+            defineReadonly(navigator, 'deviceMemory', navigatorData.deviceMemory);
+        } else {
+            defineReadonly(navigator, 'deviceMemory', 8);
         }
 
-        // Provide stable WebGL vendor.
-        const getParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function patched(param) {
-            if (param === 37445) return 'Intel Inc.';
-            if (param === 37446) return 'Intel Iris OpenGL Engine';
-            return getParameter.call(this, param);
-        };
+        defineReadonly(navigator, 'maxTouchPoints', navigatorData.maxTouchPoints ?? 0);
+        defineReadonly(navigator, 'doNotTrack', navigatorData.doNotTrack ?? '1');
 
-        // WebGL2 support
+        const connection = navigatorData.connection ?? {
+            effectiveType: '4g',
+            downlink: 10,
+            rtt: 50,
+            saveData: false,
+        };
+        defineReadonly(navigator, 'connection', connection);
+
+        const buildPlugins = () => {
+            const plugin = { description: '', filename: 'internal', name: 'Internal PDF Viewer' };
+            return {
+                length: 1,
+                0: plugin,
+                item: () => plugin,
+                namedItem: () => plugin,
+                refresh: () => {},
+            };
+        };
+        defineReadonly(navigator, 'plugins', navigatorData.plugins ?? buildPlugins());
+
+        const buildMimeTypes = () => {
+            const mime = { type: 'application/pdf', description: 'Portable Document Format', suffixes: 'pdf' };
+            return {
+                length: 1,
+                0: mime,
+                item: () => mime,
+                namedItem: () => mime,
+            };
+        };
+        defineReadonly(navigator, 'mimeTypes', navigatorData.mimeTypes ?? buildMimeTypes());
+
+        const brands = navigatorData.userAgentData?.brands ?? [
+            { brand: 'Chromium', version: '118' },
+            { brand: 'Google Chrome', version: '118' },
+            { brand: 'Not(A:Brand', version: '24' },
+        ];
+        const mobile = navigatorData.userAgentData?.mobile ?? false;
+        const uaFullVersion = navigatorData.userAgentData?.uaFullVersion ?? navigator.userAgent;
+
+        const userAgentData = {
+            brands,
+            mobile,
+            getHighEntropyValues: async (keys) => {
+                const result = {};
+                for (const key of keys) {
+                    switch (key) {
+                        case 'platform':
+                            result.platform = platform;
+                            break;
+                        case 'platformVersion':
+                            result.platformVersion = navigatorData.platformVersion ?? '15.0.0';
+                            break;
+                        case 'architecture':
+                            result.architecture = navigatorData.architecture ?? 'x86';
+                            break;
+                        case 'model':
+                            result.model = navigatorData.model ?? '';
+                            break;
+                        case 'uaFullVersion':
+                            result.uaFullVersion = uaFullVersion;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                return result;
+            },
+            toJSON() {
+                return { brands: this.brands, mobile: this.mobile };
+            },
+        };
+        defineReadonly(navigator, 'userAgentData', userAgentData);
+
+        const {
+            width: screenWidth = 1920,
+            height: screenHeight = 1080,
+            availWidth = screenWidth,
+            availHeight = screenHeight - 40,
+            colorDepth = 24,
+            pixelDepth = 24,
+        } = screenData;
+        defineReadonly(screen, 'width', screenWidth);
+        defineReadonly(screen, 'height', screenHeight);
+        defineReadonly(screen, 'availWidth', availWidth);
+        defineReadonly(screen, 'availHeight', availHeight);
+        defineReadonly(screen, 'colorDepth', colorDepth);
+        defineReadonly(screen, 'pixelDepth', pixelDepth);
+
+        const viewportWidth = viewportData.width ?? Math.min(screenWidth - 100, 1366);
+        const viewportHeight = viewportData.height ?? Math.min(screenHeight - 120, 768);
+        defineReadonly(window, 'innerWidth', viewportWidth);
+        defineReadonly(window, 'innerHeight', viewportHeight);
+        defineReadonly(window, 'outerWidth', screenWidth);
+        defineReadonly(window, 'outerHeight', screenHeight);
+        defineReadonly(window, 'devicePixelRatio', navigatorData.devicePixelRatio ?? window.devicePixelRatio ?? 1);
+
+        defineReadonly(window, 'screenX', 0);
+        defineReadonly(window, 'screenY', 0);
+
+        if (typeof Notification !== 'undefined') {
+            defineReadonly(Notification, 'permission', 'granted');
+        }
+
+        if ('permissions' in navigator) {
+            const originalQuery = navigator.permissions.query.bind(navigator.permissions);
+            navigator.permissions.query = (parameters) => {
+                if (parameters?.name === 'notifications') {
+                    return Promise.resolve({ state: 'granted' });
+                }
+                return originalQuery(parameters);
+            };
+        }
+
+        if (window.WebGLRenderingContext) {
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function patched(param) {
+                if (param === 37445) return navigatorData.webglVendor ?? 'Intel Inc.';
+                if (param === 37446) return navigatorData.webglRenderer ?? 'Intel Iris OpenGL Engine';
+                return getParameter.call(this, param);
+            };
+        }
+
         if (typeof WebGL2RenderingContext !== 'undefined') {
             const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
             WebGL2RenderingContext.prototype.getParameter = function patched(param) {
-                if (param === 37445) return 'Intel Inc.';
-                if (param === 37446) return 'Intel Iris OpenGL Engine';
+                if (param === 37445) return navigatorData.webglVendor ?? 'Intel Inc.';
+                if (param === 37446) return navigatorData.webglRenderer ?? 'Intel Iris OpenGL Engine';
                 return getParameter2.call(this, param);
             };
         }
 
-        // Add realistic battery API
-        Object.defineProperty(navigator, 'getBattery', {
-            value: () => Promise.resolve({
-                charging: true,
-                chargingTime: 0,
-                dischargingTime: Infinity,
-                level: 1,
-                addEventListener: () => {},
-                removeEventListener: () => {},
-            }),
-        });
-
-        // Media devices
         if (navigator.mediaDevices) {
-            const originalEnumerateDevices = navigator.mediaDevices.enumerateDevices;
-            navigator.mediaDevices.enumerateDevices = async function() {
-                return [
-                    { kind: 'audioinput', deviceId: 'default', label: '', groupId: '' },
-                    { kind: 'videoinput', deviceId: 'default', label: '', groupId: '' },
-                    { kind: 'audiooutput', deviceId: 'default', label: '', groupId: '' },
-                ];
+            navigator.mediaDevices.enumerateDevices = async () => ([
+                { kind: 'audioinput', deviceId: 'default', label: 'Default - Microphone', groupId: 'default' },
+                { kind: 'audiooutput', deviceId: 'default', label: 'Default - Speakers', groupId: 'default' },
+                { kind: 'videoinput', deviceId: 'default', label: 'Integrated Camera', groupId: 'default' },
+            ]);
+        }
+
+        defineReadonly(navigator, 'getBattery', () => Promise.resolve({
+            charging: true,
+            chargingTime: 0,
+            dischargingTime: Number.MAX_SAFE_INTEGER,
+            level: 0.96,
+            addEventListener: () => {},
+            removeEventListener: () => {},
+        }));
+
+        if (window.HTMLCanvasElement) {
+            const toDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function(...args) {
+                return toDataURL.apply(this, args);
             };
         }
 
-        // Remove broken iframe contentWindow.
-        Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
-            get() {
-                return window;
-            },
-        });
-
-        // Fix toString
-        const oldCall = Function.prototype.call;
-        function call() {
-            return oldCall.apply(this, arguments);
+        if (window.AudioContext) {
+            const originalOscillator = AudioContext.prototype.createOscillator;
+            AudioContext.prototype.createOscillator = function() {
+                const oscillator = originalOscillator.call(this);
+                const originalStart = oscillator.start;
+                oscillator.start = function(...args) {
+                    try {
+                        return originalStart.apply(this, args);
+                    } catch {
+                        return undefined;
+                    }
+                };
+                return oscillator;
+            };
         }
-        Function.prototype.call = call;
 
-        const nativeToStringFunctionString = Error.toString().replace(/Error/g, 'toString');
-        const oldToString = Function.prototype.toString;
+        defineReadonly(HTMLIFrameElement.prototype, 'contentWindow', window);
 
-        Function.prototype.toString = function() {
-            if (this === window.navigator.permissions.query) {
-                return 'function query() { [native code] }';
-            }
-            if (this === Function.prototype.toString) {
-                return nativeToStringFunctionString;
-            }
-            return oldCall.call(oldToString, this);
+        const timezoneId = timezone.id ?? 'America/Los_Angeles';
+        const originalResolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
+        Intl.DateTimeFormat.prototype.resolvedOptions = function(...args) {
+            const options = originalResolvedOptions.apply(this, args);
+            options.timeZone = timezoneId;
+            return options;
         };
 
-        // Prevent notification prompts
-        window.Notification = new Proxy(window.Notification, {
-            get(target, prop) {
-                if (prop === 'permission') {
-                    return 'denied';
-                }
-                return Reflect.get(...arguments);
-            },
-        });
-    });
+        const originalDateToString = Date.prototype.toString;
+        Date.prototype.toString = function() {
+            const str = originalDateToString.apply(this, []);
+            return str.replace(/\(([^)]+)\)/, `(${timezoneId.replace(/_/g, ' ')})`);
+        };
+    }, { data: stealthPayload });
 };
 
 const pushListingDatasetItem = async (origin, item) => {
@@ -610,6 +765,7 @@ crawler = new PlaywrightCrawler({
     requestHandlerTimeoutSecs: 90,
     navigationTimeoutSecs: 60,
     useSessionPool: true,
+    persistCookiesPerSession: true,
     sessionPoolOptions: {
         maxPoolSize: 100,
         sessionOptions: {
@@ -679,7 +835,9 @@ crawler = new PlaywrightCrawler({
                     const requestType = route.request().resourceType();
                     const requestUrl = route.request().url();
                     if (['image', 'media', 'font'].includes(requestType)) {
-                        if (/\b__next\/data\b/i.test(requestUrl) || /\/ajax\//i.test(requestUrl)) {
+                        if (/\b__next\/data\b/i.test(requestUrl)
+                            || /\/ajax\//i.test(requestUrl)
+                            || /cloudflare|cf-chl|captcha|challenge/i.test(requestUrl)) {
                             return route.continue();
                         }
                         return route.abort();
@@ -692,17 +850,37 @@ crawler = new PlaywrightCrawler({
             const fingerprint = browserController?.fingerprint;
             const userAgent = fingerprint?.navigator?.userAgent;
 
-            // Desktop browser headers (works for Chromium headless)
+            // Desktop browser headers (keep synced with fingerprint)
+            const headerLocale = language || fingerprint?.navigator?.languages?.[0] || 'en-US';
+            const secChUa = fingerprint?.navigator?.userAgentData?.brands
+                ?.map((brand) => `"${brand.brand}";v="${brand.version}"`)
+                .join(', ') ?? '"Chromium";v="118", "Not A(Brand";v="24", "Google Chrome";v="118"';
+            const secChUaFullVersion = fingerprint?.navigator?.userAgentData?.uaFullVersion ?? '118.0.5993.118';
+            const secChUaPlatform = fingerprint?.navigator?.platform ?? 'Windows';
+            const secChUaPlatformVersion = fingerprint?.navigator?.platformVersion ?? '15.0.0';
+
             const headers = {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language': language || 'en-US,en;q=0.5',
-                'DNT': '1',
+                'Accept-Language': `${headerLocale},en;q=0.8`,
+                'Accept-Encoding': 'gzip, deflate, br, zstd',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
                 'Upgrade-Insecure-Requests': '1',
+                'DNT': '1',
+                'Sec-CH-UA': secChUa,
+                'Sec-CH-UA-Full-Version': `"${secChUaFullVersion}"`,
+                'Sec-CH-UA-Mobile': '?0',
+                'Sec-CH-UA-Platform': `"${secChUaPlatform}"`,
+                'Sec-CH-UA-Platform-Version': `"${secChUaPlatformVersion}"`,
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
             };
 
-            // Add referrer if coming from another page in the same session
-            if (session?.userData?.lastUrl && request.userData?.label === 'PRODUCT') {
+            if (session?.userData?.lastUrl) {
                 headers['Referer'] = session.userData.lastUrl;
+                headers['Sec-Fetch-Site'] = 'same-origin';
             }
 
             await page.setExtraHTTPHeaders(headers);
@@ -716,7 +894,7 @@ crawler = new PlaywrightCrawler({
                 }
             }
 
-            await applyStealthScripts(page);
+            await applyStealthScripts(page, fingerprint);
 
             if (fingerprint) {
                 const { screen, navigator: nav } = fingerprint;
@@ -800,7 +978,7 @@ crawler = new PlaywrightCrawler({
         crawlerLog.info(`Processing ${label ?? 'UNKNOWN'}: ${request.url}`);
 
         // Random delay to appear more human-like (increased for Cloudflare)
-        const delay = 2000 + Math.random() * 3000;
+        const delay = 3000 + Math.random() * 4000;
         crawlerLog.info(`Waiting ${Math.round(delay)}ms before processing (anti-bot timing)...`);
         await page.waitForTimeout(delay);
 
