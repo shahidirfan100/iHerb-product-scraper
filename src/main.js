@@ -1,5 +1,7 @@
 import { Actor, log } from 'apify';
-import { Dataset, PlaywrightCrawler, Session } from 'crawlee';
+import { Dataset, PlaywrightCrawler } from 'crawlee';
+import { Session } from '@crawlee/core';
+import { firefox } from 'playwright';
 
 /**
  * ANTI-CLOUDFLARE CONFIGURATION GUIDE
@@ -155,11 +157,11 @@ const proxyConfiguration = await Actor.createProxyConfiguration(proxyInput);
 
 // CRITICAL: Validate proxy configuration
 if (!proxyConfiguration || !proxyInput?.useApifyProxy) {
-    log.warning('⚠️  WARNING: No proxies configured! iHerb WILL block you without proxies.');
-    log.warning('⚠️  For production use, enable Apify Proxy (RESIDENTIAL recommended)');
-    log.warning('⚠️  Set proxyConfiguration.useApifyProxy = true in input');
+    log.warning('  WARNING: No proxies configured! iHerb WILL block you without proxies.');
+    log.warning('  For production use, enable Apify Proxy (RESIDENTIAL recommended)');
+    log.warning('  Set proxyConfiguration.useApifyProxy = true in input');
 } else {
-    log.info('✓ Proxy configuration enabled:', proxyInput);
+    log.info(' Proxy configuration enabled:', proxyInput);
 }
 
 const requestQueue = await Actor.openRequestQueue();
@@ -248,16 +250,16 @@ if (!initialRequests.length) {
 
 for (const req of initialRequests) {
     await requestQueue.addRequest(req);
-    log.info(`→ Enqueued ${req.userData.label || 'UNKNOWN'}: ${req.url}`);
+    log.info(`Enqueued ${req.userData.label || 'UNKNOWN'}: ${req.url}`);
 }
 
-log.info(`\n========================================`);
-log.info(`✓ Seeded ${initialRequests.length} initial request${initialRequests.length === 1 ? '' : 's'}`);
+log.info('========================================');
+log.info(`Seeded ${initialRequests.length} initial request${initialRequests.length === 1 ? '' : 's'}`);
 log.info(`Configuration: maxConcurrency=${maxConcurrency}, maxRetries=10, browser=Firefox, resultsWanted=${resultsWanted}`);
 log.info(`Wait strategy: load (Cloudflare-friendly), delays: 2-5s per request`);
 log.info(`Anti-bot measures: Session rotation, enhanced stealth, human-like behavior, random delays`);
-log.info(`Proxies: ${proxyConfiguration ? 'ENABLED ✓' : 'DISABLED ⚠️ (will likely be blocked!)'}`);
-log.info(`========================================\n`);
+log.info(`Proxies: ${proxyConfiguration ? 'ENABLED' : 'DISABLED (will likely be blocked!)'}`);
+log.info('========================================');
 
 const cookiesForContext = parseCookies(rawCookies, cookiesJson, baseOrigin);
 
@@ -556,7 +558,7 @@ const enqueueNextListingPage = async ({ request, pageProps, crawler: crawlerInst
     stat.maxQueued = Math.max(stat.maxQueued, nextPage);
     listingStats.set(listingKey, stat);
 
-    log.info(`→ Enqueueing page ${nextPage}: ${nextUrl}`);
+    log.info(` Enqueueing page ${nextPage}: ${nextUrl}`);
     await crawlerInstance.addRequests([{
         url: nextUrl,
         userData: {
@@ -582,11 +584,15 @@ crawler = new PlaywrightCrawler({
             maxErrorScore: 0.5,
             maxAgeSecs: 900,
         },
-        createSessionFunction: (sessionPool) => {
-            const session = new Session({ sessionPool });
+        createSessionFunction: (sessionPool, options = {}) => {
+            const session = new Session({
+                ...(options?.sessionOptions ?? {}),
+                sessionPool,
+            });
             session.userData = {
                 createdAt: Date.now(),
                 requestCount: 0,
+                challengeCount: 0,
             };
             return session;
         },
@@ -603,6 +609,7 @@ crawler = new PlaywrightCrawler({
         },
     },
     launchContext: {
+        launcher: firefox,
         launchOptions: {
             headless: true,
             args: [
@@ -637,8 +644,12 @@ crawler = new PlaywrightCrawler({
 
             if (!page.__blockResourcesApplied) {
                 await page.route('**/*', (route) => {
-                    const type = route.request().resourceType();
-                    if (['image', 'media', 'font'].includes(type)) {
+                    const requestType = route.request().resourceType();
+                    const requestUrl = route.request().url();
+                    if (['image', 'media', 'font'].includes(requestType)) {
+                        if (/\b__next\/data\b/i.test(requestUrl) || /\/ajax\//i.test(requestUrl)) {
+                            return route.continue();
+                        }
                         return route.abort();
                     }
                     return route.continue();
@@ -696,6 +707,7 @@ crawler = new PlaywrightCrawler({
             }
 
             if (session?.userData) {
+                session.userData.requestCount = (session.userData.requestCount ?? 0) + 1;
                 session.userData.lastUrl = request.url;
             }
         },
@@ -716,6 +728,9 @@ crawler = new PlaywrightCrawler({
             // Check for blocking status codes FIRST
             if (status === 403 || status === 429 || status === 503) {
                 log.warning(`Received status ${status}, retiring session.`);
+                if (session?.userData) {
+                    session.userData.challengeCount = (session.userData.challengeCount ?? 0) + 1;
+                }
                 session?.markBad?.();
                 if (session) session.retire();
                 throw new Error(`HTTP ${status} - Request blocked or rate limited`);
@@ -728,8 +743,13 @@ crawler = new PlaywrightCrawler({
                 
                 if (await looksLikeChallengePage(page)) {
                     log.warning('Bot challenge detected on successful response, retiring session.');
+                    if (session?.userData) {
+                        session.userData.challengeCount = (session.userData.challengeCount ?? 0) + 1;
+                    }
                     session?.markBad?.();
-                    if (session) session.retire();
+                    if (session && (session.userData?.challengeCount ?? 0) >= 2) {
+                        session.retire();
+                    }
                     throw new Error('Encountered bot challenge / Cloudflare gate');
                 }
             }
@@ -769,7 +789,7 @@ crawler = new PlaywrightCrawler({
             
             nextData = await extractNextData(page);
             if (nextData?.props?.pageProps) {
-                crawlerLog.info(`✓ __NEXT_DATA__ extracted successfully on attempt ${attempt + 1}`);
+                crawlerLog.info(` __NEXT_DATA__ extracted successfully on attempt ${attempt + 1}`);
                 break;
             }
             crawlerLog.warning(`Attempt ${attempt + 1}/3: No valid __NEXT_DATA__ found, retrying...`);
@@ -889,7 +909,7 @@ crawler = new PlaywrightCrawler({
             if (dedupe && productId) productSeenSet.add(productId);
 
             await pushProductDatasetItem(request.url, product);
-            crawlerLog.info(`✓ Saved product ${savedCount}${Number.isFinite(resultsWanted) ? `/${resultsWanted}` : ''} - ${product.displayName || 'Unknown'}`);
+            crawlerLog.info(` Saved product ${savedCount}${Number.isFinite(resultsWanted) ? `/${resultsWanted}` : ''} - ${product.displayName || 'Unknown'}`);
             await stopIfNeeded();
             return;
         } else {
@@ -936,7 +956,7 @@ crawler = new PlaywrightCrawler({
                 });
 
                 if (domResults.length) {
-                    crawlerLog.info(`✓ DOM fallback successful: found ${domResults.length} product links`);
+                    crawlerLog.info(` DOM fallback successful: found ${domResults.length} product links`);
                     productsToHandle = domResults.map((item) => ({
                         partNumber: item.partNumber,
                         slug: item.slug ?? '',
@@ -1005,7 +1025,7 @@ crawler = new PlaywrightCrawler({
                     });
                 } else {
                     await pushListingDatasetItem(baseOrigin, item);
-                    crawlerLog.info(`✓ Saved product ${savedCount}${Number.isFinite(resultsWanted) ? `/${resultsWanted}` : ''} - ${item.displayName || 'Unknown'}`);
+                    crawlerLog.info(` Saved product ${savedCount}${Number.isFinite(resultsWanted) ? `/${resultsWanted}` : ''} - ${item.displayName || 'Unknown'}`);
                 }
             }
 
@@ -1037,7 +1057,7 @@ crawler = new PlaywrightCrawler({
 });
 
 await crawler.run();
-log.info(`✓ Scraping completed successfully!`);
+log.info(` Scraping completed successfully!`);
 log.info(`Total products saved: ${savedCount}`);
 log.info(`Check your dataset for the extracted product data.`);
 await Actor.exit();

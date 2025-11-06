@@ -4,9 +4,9 @@
     "type": "module",
     "description": "Apify Actor for scraping product data from iHerb.com using Playwright to bypass anti-bot protection",
     "dependencies": {
-        "apify": "^3.4.2",
-        "crawlee": "^3.13.8",
-        "playwright": "1.54.1"
+        "apify": "^3.5.0",
+        "crawlee": "^3.15.1",
+        "playwright": "^1.49.0"
     },
     "devDependencies": {
         "@apify/eslint-config": "^1.0.0",

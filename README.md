@@ -1,6 +1,6 @@
 # iHerb Product Scraper
 
-Scrapes product data from iHerb.com using **Playwright** (real Chromium browser) to bypass bot detection. This Apify actor gathers structured product data from [iHerb](https://www.iherb.com/) using Crawlee's `PlaywrightCrawler` with anti-bot evasion techniques.
+Scrapes product data from iHerb.com using **Playwright** (real Firefox browser) to bypass bot detection. This Apify actor gathers structured product data from [iHerb](https://www.iherb.com/) using Crawlee's `PlaywrightCrawler` with anti-bot evasion techniques.
 
 ## Features
 
@@ -83,9 +83,9 @@ npm start
 ## Technical Details
 
 - **Stack**: Apify SDK + Crawlee 3.x + Playwright
-- **Browser**: Chromium (headless)
+- **Browser**: Firefox (headless)
 - **Data Source**: Next.js `__NEXT_DATA__` script tag
-- **Concurrency**: 8 parallel browsers (configurable)
+- **Concurrency**: Default concurrency of 1 (configurable)
 - **Stealth**: Hides webdriver property, uses realistic user agents and fingerprints
 
 ## Notes
