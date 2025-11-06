@@ -663,20 +663,14 @@ crawler = new PlaywrightCrawler({
             // Firefox-specific headers (NOT Chrome!)
             const headers = {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
                 'Accept-Language': language || 'en-US,en;q=0.5',
                 'DNT': '1',
                 'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'TE': 'trailers', // Firefox specific
             };
 
             // Add referrer if coming from another page in the same session
             if (session?.userData?.lastUrl && request.userData?.label === 'PRODUCT') {
                 headers['Referer'] = session.userData.lastUrl;
-                headers['Sec-Fetch-Site'] = 'same-origin';
             }
 
             await page.setExtraHTTPHeaders(headers);
